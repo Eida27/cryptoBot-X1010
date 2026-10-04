@@ -53,6 +53,8 @@ class OrderState(StrEnum):
 
 
 class ExitReason(StrEnum):
+    STOP = "STOP"
+    TARGET = "TARGET"
     TIME_LIMIT = "TIME_LIMIT"
     TRIAL_LOSS = "TRIAL_LOSS"
     OPERATOR = "OPERATOR"
