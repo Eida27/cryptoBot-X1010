@@ -22,6 +22,11 @@ def main() -> None:
     download.add_argument("--start")
     download.add_argument("--end")
     download.add_argument("--out", type=Path, required=True)
+    backtest = commands.add_parser("backtest")
+    backtest.add_argument("--dataset", type=Path, required=True)
+    backtest.add_argument("--config", type=Path, default=Path("config/backtest.toml"))
+    backtest.add_argument("--out", type=Path, required=True)
+    backtest.add_argument("--stress", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "data":
@@ -38,6 +43,17 @@ def main() -> None:
             print(json.dumps({"content_hash": manifest.content_hash, "manifest": str(manifest.root / "manifest.json")}))
             return
         settings = load_settings(args.config, os.environ)
+        if args.command == "backtest":
+            from crypto_bot.research.datasets import load_manifest
+            from crypto_bot.research.simulation import run_backtest
+            from crypto_bot.storage.repository import encode
+            result = run_backtest(load_manifest(args.dataset), settings, stress=args.stress)
+            args.out.mkdir(parents=True, exist_ok=True)
+            target = args.out / ("stress-run.json" if args.stress else "base-run.json")
+            target.write_text(encode(result), encoding="utf-8")
+            print(json.dumps({"run": str(target), "closed_trades": len(result.trades),
+                              "failed_assumptions": result.failed_assumptions}))
+            return
         print(json.dumps(settings.safe_dict(), indent=2))
     except (ConfigurationError, ValueError) as exc:
         parser.error(str(exc))
