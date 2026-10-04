@@ -1,0 +1,9 @@
+mode = "PAPER"
+database = "state/paper.sqlite3"
+host_profile = "local"
+container_runtime = true
+bind_host = "0.0.0.0"
+initial_capital_usdt = "16.00"
+leverage = "2"
+entries_enabled = false
+live_trading_enabled = false

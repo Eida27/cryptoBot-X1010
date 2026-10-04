@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     mode: Mode = Mode.PAPER
     database: Path = Path("state/paper.sqlite3")
     host_profile: str = "local"
+    container_runtime: bool = False
     initial_capital_usdt: Decimal = Decimal("16.00")
     allocation_reference: str = "Virtual estimate for PHP 1,000; not a current FX quote"
     live_trading_enabled: bool = False
@@ -79,6 +80,7 @@ class Settings(BaseSettings):
             "mode",
             "database",
             "host_profile",
+            "container_runtime",
             "live_trading_enabled",
             "port",
             "bind_host",
@@ -103,9 +105,9 @@ def validate_mode(settings: Settings) -> None:
         errors.append("Endpoint does not match the allowlisted environment")
     if settings.bind_host not in {"127.0.0.1", "0.0.0.0"}:
         errors.append("Unsupported bind address")
-    if settings.bind_host == "0.0.0.0" and settings.host_profile != "container":
+    if settings.bind_host == "0.0.0.0" and not settings.container_runtime:
         errors.append("Wildcard bind allowed only inside loopback-published container")
-    if settings.mode is Mode.LIVE and settings.host_profile not in {"vps", "container"}:
+    if settings.mode is Mode.LIVE and settings.host_profile != "vps":
         errors.append("LIVE requires a continuously operated VPS")
     if set(settings.symbols) - {"BTCUSDT", "ETHUSDT", "SOLUSDT"}:
         errors.append("Unapproved research universe")

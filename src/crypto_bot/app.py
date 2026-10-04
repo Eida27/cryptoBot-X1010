@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -111,8 +112,11 @@ def build_service(settings: Settings) -> Any:
                                 {"config": settings.config_hash, "strategy": STRATEGY_HASH}, clock.now_ms())
     if trial.hashes.get("config") != settings.config_hash:
         repo.latch_halt(trial.run_id, "CONFIGURATION_CHANGED")
+    from crypto_bot.research.gates import code_hash
+    if settings.mode is Mode.LIVE and (trial.hashes.get("code") != code_hash() or trial.hashes.get("strategy") != STRATEGY_HASH or not trial.hashes.get("evidence")):
+        repo.latch_halt(trial.run_id, "EVIDENCE_CHANGED")
     adapter = BinanceAdapter(settings, private=settings.mode in {Mode.DEMO, Mode.LIVE}, clock=clock)
-    adapter.live_armed = settings.mode is Mode.LIVE and trial.hashes.get("armed") == "true"
+    adapter.live_armed = settings.mode is Mode.LIVE and trial.hashes.get("armed") == "true" and trial.hashes.get("code") == code_hash() and trial.hashes.get("config") == settings.config_hash
     exchange = PaperBroker(repo, clock, adapter) if settings.mode is Mode.PAPER else adapter
     engine = ExecutionCoordinator(repo, exchange, clock, settings)
     ProtectionManager(engine)
@@ -122,7 +126,25 @@ def build_service(settings: Settings) -> Any:
     @asynccontextmanager
     async def lifespan(application: Any) -> Any:
         with ProcessLock(settings.database):
+            from crypto_bot.ops.logging import configure_logging
+            from crypto_bot.ops.backup import check_disk, create_backup
+            from pathlib import Path
+            configure_logging(settings.database.parent / "logs")
+            async def maintenance() -> None:
+                last_backup = 0
+                while True:
+                    try:
+                        check_disk(settings.database.parent)
+                        if clock.now_ms() - last_backup >= 86400000:
+                            await asyncio.to_thread(create_backup, settings.database, Path("backups"))
+                            last_backup = clock.now_ms()
+                        repo.db.connection.execute("DELETE FROM equity_snapshots WHERE at_ms<?", (clock.now_ms() - 90 * 86400000,))
+                    except Exception:
+                        repo.latch_halt(trial.run_id, "STORAGE_HEALTH_FAILED")
+                        logging.getLogger("crypto_bot").error("Storage health failed; entries blocked")
+                    await clock.sleep(60)
             tasks = [asyncio.create_task(worker.run()), asyncio.create_task(run_market(worker, adapter))]
+            tasks.append(asyncio.create_task(maintenance()))
             async def private_events() -> None:
                 while True:
                     try:

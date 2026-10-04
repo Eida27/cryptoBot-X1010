@@ -1,0 +1,25 @@
+services:
+  bot:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file: .env
+    environment:
+      WEB_CONCURRENCY: "1"
+    volumes:
+      - ./state:/app/state
+      - ./data:/app/data
+      - ./reports:/app/reports
+      - ./backups:/app/backups
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      replicas: 1

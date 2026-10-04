@@ -36,6 +36,9 @@ class BotWorker:
         self.safety_task: asyncio.Task[Any] | None = None
         self.running = True
         self.last_reason: str | None = None
+        self.market_heartbeat_ms = 0
+        self.loop_lag_seconds = 0.0
+        self.loop_lags: list[float] = []
 
     async def refresh(self) -> None:
         try:
@@ -55,6 +58,11 @@ class BotWorker:
                 mark_interrupted(self.repo, trial.run_id, "RISK_LOOP_GAP", now_ms)
             self.repo.mark_reconciled(now_ms, False)
         self.last_tick = now_ms
+        self.loop_lags.append(self.loop_lag_seconds)
+        if len(self.loop_lags) >= 60:
+            from crypto_bot.storage.repository import encode
+            self.repo.db.connection.execute("INSERT INTO audit_events(run_id,at_ms,kind,payload) VALUES(?,?,'LOOP_TIMING',?)", (trial.run_id, now_ms, encode({"lags": self.loop_lags})))
+            self.loop_lags = []
         self.repo.db.connection.execute("UPDATE run_state SET last_heartbeat=? WHERE run_id=?", (now_ms, trial.run_id))
         cadence = 5000 if self.repo.position() else 30000
         if (self.last_refresh is None or now_ms - self.last_refresh >= cadence) and (self.refresh_task is None or self.refresh_task.done()):
@@ -104,6 +112,10 @@ class BotWorker:
                 return CommandResult(False, "NEW_PAPER_SESSION_REQUIRED")
             if trial.mode is Mode.LIVE and trial.hashes.get("armed") != "true":
                 return CommandResult(False, "LIVE_NOT_ARMED")
+            if trial.mode is Mode.LIVE:
+                from crypto_bot.research.gates import code_hash
+                if trial.hashes.get("code") != code_hash() or trial.hashes.get("config") != self.engine.settings.config_hash:
+                    return CommandResult(False, "LIVE_EVIDENCE_CHANGED")
             return CommandResult(self.repo.resume(trial.run_id), "RECONCILIATION_OR_HALT" if not self.repo.state().get("reconciled") or trial.halt_reason == "TRIAL_LOSS" else None)
         if command.action == "close-and-pause":
             result = await self.engine.request_exit(ExitReason.OPERATOR)
@@ -126,9 +138,12 @@ class BotWorker:
         if trial and trial.mode is Mode.PAPER and self.repo.state().get("last_heartbeat") is not None:
             mark_interrupted(self.repo, trial.run_id, "SERVICE_RESTART", self.clock.now_ms())
         await self.refresh()
+        expected_tick = asyncio.get_running_loop().time()
         while self.running:
+            self.loop_lag_seconds = max(0, asyncio.get_running_loop().time() - expected_tick)
             await self.tick(self.clock.now_ms())
-            await self.clock.sleep(1)
+            expected_tick += 1
+            await self.clock.sleep(max(0, expected_tick - asyncio.get_running_loop().time()))
 
     async def stop(self) -> None:
         self.running = False

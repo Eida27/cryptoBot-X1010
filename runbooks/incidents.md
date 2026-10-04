@@ -1,0 +1,9 @@
+# Incident response
+
+Pause prevents new entries; it does not close exposure. Use Close positions and pause for a deliberate owned-position reduction, then verify CONFIRMED and actual exchange flatness. Pending/UNKNOWN means uncertainty, never retry an exposure-increasing request manually. Client IDs and intents are durable; recovery queries both ordinary and conditional namespaces. Keep the stop in place until confirmed flat and verify sibling cancellation before releasing capacity.
+
+A TRIAL_LOSS halt is permanent for that trial. Restart, deposits, labels and Resume cannot change its baseline/floor. A genuinely new LIVE trial requires fresh explicit acknowledgement, declared exclusive allocation, all release gates and flat reconciliation. Technical fault acknowledgement records review but does not itself resume.
+
+External positions/orders/transfers, unexpected wallet changes and non-USDT commissions cause a halt. Do not adopt or liquidate unknown exposure. Inspect the private venue account outside the bot, establish ownership and correct the discrepancy; then reconcile before considering Resume. Treat a missed stream, stale account, clock jump or backlog as a safety fault. A PAPER gap permanently disqualifies that run; no virtual trades are reconstructed during absence.
+
+If SQLite is unavailable/corrupt: block entries, preserve exchange-hosted protection and use emergency reduction only for the last verified owned exposure with an explicit reduce-only request. A signed acknowledgement alone is not proof of closure. Review the private emergency log, recover state from a verified backup and reconcile account truth. Never delete a live database to clear a halt. Storage near exhaustion blocks operation; rotate/retain only configured log/backup files and move historical market data separately.

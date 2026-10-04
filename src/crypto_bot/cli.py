@@ -51,6 +51,19 @@ def main() -> None:
     trial = commands.add_parser("trial").add_subparsers(dest="action", required=True).add_parser("arm")
     trial.add_argument("--evidence", type=Path, required=True)
     trial.add_argument("--config", type=Path, required=True)
+    backup = commands.add_parser("backup")
+    backup.add_argument("--config", type=Path, default=Path("config/paper.toml"))
+    backup.add_argument("--out", type=Path, required=True)
+    restore = commands.add_parser("restore-check")
+    restore.add_argument("--backup", type=Path, required=True, help="Backup JSON manifest")
+    restore.add_argument("--out", type=Path, required=True, help="New isolated mode-named SQLite path")
+    doctor = commands.add_parser("doctor")
+    doctor.add_argument("--config", type=Path, default=Path("config/paper.toml"))
+    resources = commands.add_parser("resources")
+    resources.add_argument("--config", type=Path, default=Path("config/paper.toml"))
+    resources.add_argument("--pid", type=int, required=True, help="Running service process ID")
+    resources.add_argument("--seconds", type=int, default=72 * 3600)
+    resources.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "auth":
@@ -66,6 +79,10 @@ def main() -> None:
             args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
             args.out.chmod(0o600)
             print("Dashboard password hash saved locally")
+            return
+        if args.command == "restore-check":
+            from crypto_bot.ops.backup import BackupManifest, verify_restore
+            print(json.dumps({"path": str(verify_restore(BackupManifest.read(args.backup), args.out).path), "state": "PAUSED_RECONCILIATION_REQUIRED"}))
             return
         if args.command == "data":
             from crypto_bot.research.datasets import DatasetRequest, download_dataset
@@ -84,6 +101,38 @@ def main() -> None:
         environment = {k: v for k, v in dotenv_values(args.secrets).items() if v is not None}
         environment.update(os.environ)
         settings = load_settings(args.config, environment)
+        if args.command == "backup":
+            from crypto_bot.ops.backup import create_backup
+            result_backup = create_backup(settings.database, args.out)
+            print(json.dumps({"path": str(result_backup.path), "checksum": result_backup.checksum}))
+            return
+        if args.command == "resources":
+            from crypto_bot.ops.health import measure_resources
+            from crypto_bot.storage.repository import encode
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(encode(measure_resources(args.seconds, args.pid, settings.database)), encoding="utf-8")
+            print(json.dumps({"measurement": str(args.out)}))
+            return
+        if args.command == "doctor":
+            from crypto_bot.exchange.binance_adapter import BinanceAdapter
+            from crypto_bot.domain.enums import Mode
+            from crypto_bot.storage.database import Database
+            from crypto_bot.storage.repository import Repository, encode
+            from crypto_bot.web.views import build_dashboard_view
+            async def diagnose() -> None:
+                db = Database(settings.database)
+                adapter = BinanceAdapter(settings, private=settings.mode in {Mode.DEMO, Mode.LIVE})
+                try:
+                    server = await adapter.read("check_server_time")
+                    rules = [await adapter.fetch_rules(s) for s in settings.symbols]
+                    state = build_dashboard_view(Repository(db))
+                    print(encode({"exchange_clock_delta_ms": int(server["serverTime"]) - adapter.clock.now_ms(), "symbols": rules, "state": state, "mutations": 0}))
+                finally:
+                    db.close()
+                    if hasattr(adapter.transport, "close"):
+                        adapter.transport.close()
+            asyncio.run(diagnose())
+            return
         if args.command == "gate":
             from crypto_bot.research.gates import EvidenceBundle, evaluate_gates
             from crypto_bot.storage.repository import encode

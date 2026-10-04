@@ -1,0 +1,11 @@
+# Local research and PAPER
+
+Use Python 3.12 via `uv sync --locked --group dev` on Windows PowerShell or Linux. Install Chromium only for browser verification (`uv run playwright install chromium`). Set a local password with `uv run cbot auth set-password`; only an Argon2 hash is saved. Keep `.env`, state, reports and backups private. On Windows restrict the checkout/secret file ACL to your account; chmod alone cannot enforce Windows ACLs. Do not put secrets in Git.
+
+`uv run cbot serve --config config/paper.toml` starts one worker and the authenticated dashboard at 127.0.0.1:8000. Configure no Uvicorn reload or extra worker. Startup is always PAUSED. Protection/risk evaluation continues while paused. A healthy account, complete public streams/funding/rules and verified maintenance metadata are required before entry. The dashboard labels missing/stale information and shows skipped entries.
+
+For Docker Desktop, enable its WSL2 Linux backend; Linux can use Docker Engine/Compose. Create `state`, `data`, `reports`, `backups` and make them writable by UID/GID 10001 on Linux (`sudo chown -R 10001:10001 state data reports backups`). Create `.env` via the CLI, then `docker compose config` and `docker compose up --build -d`. Loopback is the only published address. Inspect `docker compose ps` and private dashboard health. No public domain is needed. Do not scale; database ownership is protected by an OS lock. An empty state volume creates a paused paper run. Restart stops qualification permanently for the old paper run; explicit new-session starts a distinct trial.
+
+Download/backtest/report jobs are separate from the service. Manifests pin chronological splits, assumptions and checksums. Missing bars/funding/brackets block qualification. Sample or synthetic inputs prove logic only. Stop the local service before `cbot paper new-session`. Preserve the prior run and its report; no fills are invented for the offline period.
+
+The CLI reads `.env` explicitly (OS variables win). PAPER/BACKTEST never read private API credentials. DEMO only reads `CBOT_DEMO_API_KEY` / `CBOT_DEMO_API_SECRET`; LIVE only reads `CBOT_LIVE_API_KEY` / `CBOT_LIVE_API_SECRET`. Never use production credentials with demo config. Mode is changed through a new config and restart, with a separate mode-named database.
