@@ -31,3 +31,12 @@ not execution freshness or a frozen research dataset. Runtime must fetch fresh f
 Live blockers: actual demo lifecycle, close-all races, partial fills, reconnect behavior,
 account eligibility, funding and maintenance-bracket inputs require separate evidence.
 No private exchange calls or performance history were used for this compatibility check.
+
+Installed-source incompatibility: SDK 17.5.0 generic REST wrappers call
+`send_request[T]`, which raises `TypeError` on Python 3.12. A characterization test
+reproduces this without network access. The narrow transport invokes the same
+`binance_common.utils.send_request` directly with the SDK-owned session/signer,
+no response model and zero retries. This retains official signing and raw decimal
+strings; it does not patch dependencies. Demo execution evidence remains required.
+Also, the SDK TESTNET constant points to the older testnet host; DEMO explicitly
+selects the official demo URL instead of that constant.
