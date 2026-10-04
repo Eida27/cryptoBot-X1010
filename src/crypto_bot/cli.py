@@ -11,7 +11,10 @@ from crypto_bot.config import ConfigurationError, load_settings
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="cbot", description="Private Futures research bot")
+    parser.add_argument("--secrets", type=Path, default=Path(".env"), help="Local secret environment file; OS environment wins")
     commands = parser.add_subparsers(dest="command", required=True)
+    auth = commands.add_parser("auth").add_subparsers(dest="action", required=True).add_parser("set-password")
+    auth.add_argument("--out", type=Path, default=Path(".env"))
     config = commands.add_parser("config").add_subparsers(dest="action", required=True)
     validate = config.add_parser("validate")
     validate.add_argument("--config", type=Path, required=True)
@@ -50,6 +53,20 @@ def main() -> None:
     trial.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     try:
+        if args.command == "auth":
+            import getpass
+            from argon2 import PasswordHasher
+            password = getpass.getpass("New dashboard password: ")
+            if len(password) < 12 or password != getpass.getpass("Confirm dashboard password: "):
+                raise ValueError("Use at least 12 characters and matching confirmation")
+            content = args.out.read_text(encoding="utf-8") if args.out.exists() else ""
+            lines = [line for line in content.splitlines() if not line.startswith("CBOT_PASSWORD_HASH=")]
+            lines.append("CBOT_PASSWORD_HASH='" + PasswordHasher().hash(password) + "'")
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            args.out.chmod(0o600)
+            print("Dashboard password hash saved locally")
+            return
         if args.command == "data":
             from crypto_bot.research.datasets import DatasetRequest, download_dataset
             end = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -63,7 +80,10 @@ def main() -> None:
             manifest = asyncio.run(download_dataset(request, args.out))
             print(json.dumps({"content_hash": manifest.content_hash, "manifest": str(manifest.root / "manifest.json")}))
             return
-        settings = load_settings(args.config, os.environ)
+        from dotenv import dotenv_values
+        environment = {k: v for k, v in dotenv_values(args.secrets).items() if v is not None}
+        environment.update(os.environ)
+        settings = load_settings(args.config, environment)
         if args.command == "gate":
             from crypto_bot.research.gates import EvidenceBundle, evaluate_gates
             from crypto_bot.storage.repository import encode
