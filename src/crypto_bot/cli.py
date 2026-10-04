@@ -36,6 +36,18 @@ def main() -> None:
     control = commands.add_parser("control")
     control.add_argument("action", choices=["pause", "close-and-pause", "acknowledge-fault"])
     control.add_argument("--config", type=Path, default=Path("config/paper.toml"))
+    report = commands.add_parser("report")
+    report.add_argument("--run", required=True)
+    report.add_argument("--config", type=Path, default=Path("config/paper.toml"))
+    report.add_argument("--hosting-monthly-usd", default="0")
+    report.add_argument("--usdt-per-usd", default="1")
+    report.add_argument("--out", type=Path, required=True)
+    gate = commands.add_parser("gate").add_subparsers(dest="action", required=True).add_parser("evaluate")
+    gate.add_argument("--evidence", type=Path, required=True)
+    gate.add_argument("--config", type=Path, default=Path("config/paper.toml"))
+    trial = commands.add_parser("trial").add_subparsers(dest="action", required=True).add_parser("arm")
+    trial.add_argument("--evidence", type=Path, required=True)
+    trial.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "data":
@@ -52,6 +64,59 @@ def main() -> None:
             print(json.dumps({"content_hash": manifest.content_hash, "manifest": str(manifest.root / "manifest.json")}))
             return
         settings = load_settings(args.config, os.environ)
+        if args.command == "gate":
+            from crypto_bot.research.gates import EvidenceBundle, evaluate_gates
+            from crypto_bot.storage.repository import encode
+            print(encode(evaluate_gates(EvidenceBundle.read(args.evidence), settings)))
+            return
+        if args.command == "report":
+            from decimal import Decimal
+            from crypto_bot.domain.clock import SystemClock
+            from crypto_bot.research.reports import HostingCost, build_report, read_run, repository_run
+            from crypto_bot.storage.database import Database
+            from crypto_bot.storage.repository import Repository
+            if Path(args.run).is_file():
+                result = read_run(Path(args.run))
+            else:
+                db = Database(settings.database)
+                try:
+                    result = repository_run(Repository(db), args.run, SystemClock().now_ms())
+                finally:
+                    db.close()
+            build_report(result, HostingCost(Decimal(args.hosting_monthly_usd), Decimal(args.usdt_per_usd))).write(args.out)
+            print(json.dumps({"report": str(args.out / "report.html")}))
+            return
+        if args.command == "trial":
+            from decimal import Decimal
+            from crypto_bot.research.gates import EvidenceBundle, GateStatus, arm_trial, evaluate_gates
+            from crypto_bot.exchange.binance_adapter import BinanceAdapter
+            from crypto_bot.market.service import MarketService
+            from crypto_bot.domain.models import Signal
+            from crypto_bot.domain.enums import PositionSide
+            bundle = EvidenceBundle.read(args.evidence)
+            blocked = [g for g in evaluate_gates(bundle, settings).gates[:6] if g.status is not GateStatus.PASS]
+            if blocked:
+                raise ValueError("Arming blocked: " + "; ".join(f"{g.identity}: {g.status.value}" for g in blocked))
+            allocation = Decimal(input("Declared exclusive USDT allocation: "))
+            acknowledgement = input("Type ARM NEW BOUNDED LIVE TRIAL: ")
+            async def preflight() -> None:
+                adapter = BinanceAdapter(settings, private=True)
+                try:
+                    snapshot = await adapter.fetch_snapshot()
+                    verified_settings = []
+                    for symbol in settings.symbols:
+                        context = await MarketService(adapter, adapter).build_context(Signal("preflight", "", symbol, adapter.clock.now_ms(), PositionSide.LONG, Decimal("1"), Decimal("1")))
+                        verified_settings.append(context.settings)
+                    for v in verified_settings:
+                        from crypto_bot.research.gates import validate_arming_preflight
+                        validate_arming_preflight(settings, allocation, snapshot, v)
+                    trial = arm_trial(bundle, settings, allocation, acknowledgement, snapshot=snapshot, verified=verified_settings[0], at_ms=adapter.clock.now_ms())
+                    print(json.dumps({"run_id": trial.run_id, "state": "PAUSED"}))
+                finally:
+                    if hasattr(adapter.transport, "close"):
+                        adapter.transport.close()
+            asyncio.run(preflight())
+            return
         if args.command == "serve":
             import uvicorn
             from crypto_bot.app import build_service

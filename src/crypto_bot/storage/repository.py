@@ -258,10 +258,14 @@ class Repository:
                 ),
             )
 
+    def current_run_id(self) -> str:
+        trial = self.current_trial()
+        return trial.run_id if trial else ""
+
     def intents(self) -> tuple[OrderIntent, ...]:
         return tuple(
             decode_intent(r[0])
-            for r in self.db.connection.execute("SELECT payload FROM order_intents ORDER BY rowid")
+            for r in self.db.connection.execute("SELECT payload FROM order_intents WHERE run_id=? ORDER BY rowid", (self.current_run_id(),))
         )
 
     def intent_state(self, identity: str) -> OrderState:
@@ -337,17 +341,17 @@ class Repository:
     def count_income_events(self) -> int:
         return int(self.db.connection.execute("SELECT count(*) FROM income_events").fetchone()[0])
 
-    def income_events(self) -> tuple[IncomeEvent, ...]:
+    def income_events(self, run_id: str | None = None) -> tuple[IncomeEvent, ...]:
         events = []
-        for row in self.db.connection.execute("SELECT payload FROM income_events ORDER BY at_ms"):
+        for row in self.db.connection.execute("SELECT payload FROM income_events WHERE run_id=? ORDER BY at_ms", (run_id or self.current_run_id(),)):
             value = json.loads(row[0])
             value["amount"] = D(value["amount"])
             events.append(IncomeEvent(**value))
         return tuple(events)
 
-    def fills(self) -> tuple[FillEvent, ...]:
+    def fills(self, run_id: str | None = None) -> tuple[FillEvent, ...]:
         events = []
-        for row in self.db.connection.execute("SELECT payload FROM fills ORDER BY at_ms"):
+        for row in self.db.connection.execute("SELECT payload FROM fills WHERE run_id=? ORDER BY at_ms", (run_id or self.current_run_id(),)):
             value = json.loads(row[0])
             for key in ("price", "quantity", "commission"):
                 value[key] = D(value[key])
@@ -429,7 +433,7 @@ class Repository:
         return tuple(
             ControlCommand(r["request_id"], r["action"], r["operator"], r["at_ms"])
             for r in self.db.connection.execute(
-                "SELECT * FROM control_commands WHERE state='PENDING' ORDER BY at_ms,rowid"
+                "SELECT * FROM control_commands WHERE state='PENDING' AND run_id=? ORDER BY at_ms,rowid", (self.current_run_id(),)
             )
         )
 

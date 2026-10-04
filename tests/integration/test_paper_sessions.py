@@ -37,3 +37,16 @@ def test_paper_reset_cannot_replace_live_trial(repo, clock):
     repo.db.connection.execute("UPDATE runs SET mode='LIVE'")
     with pytest.raises(ValueError, match="PAPER"):
         new_paper_session(repo, D("20"), {}, clock.now_ms())
+def test_archive_does_not_mix_prior_fill_income_or_commands(repo):
+    from crypto_bot.domain.models import FillEvent, IncomeEvent, ControlCommand
+    from crypto_bot.domain.enums import OrderSide
+    from crypto_bot.research.paper import new_paper_session
+    old = repo.current_trial()
+    repo.record_execution(FillEvent("PAPER", "virtual", "SOLUSDT", "old", "old", D("100"), D("1"), D("0.06"), "USDT", 1, OrderSide.BUY))
+    repo.record_execution(IncomeEvent("PAPER", "virtual", "SOLUSDT", "old", "FUNDING_FEE", D("-0.01"), "USDT", 2))
+    repo.enqueue_command(ControlCommand("old", "close-and-pause", "operator", 3))
+    new_paper_session(repo, D("20"), old.hashes, 4)
+    assert repo.fills() == ()
+    assert repo.income_events() == ()
+    assert repo.pending_commands() == ()
+    assert len(repo.fills(old.run_id)) == 1
