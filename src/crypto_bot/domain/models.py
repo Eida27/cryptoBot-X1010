@@ -211,6 +211,7 @@ class OrderObservation:
     average_price: D = D("0")
     first_fill_ms: int | None = None
     observed_ms: int = 0
+    actual_order_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -288,6 +289,8 @@ class MarkEvent:
     symbol: str
     at_ms: int
     price: D
+    funding_rate: D | None = None
+    next_funding_ms: int | None = None
 
 
 @dataclass(frozen=True)

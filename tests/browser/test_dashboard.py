@@ -1,7 +1,6 @@
 import socket
 import threading
 import time
-from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -20,8 +19,21 @@ from crypto_bot.web.routes import create_app
 @pytest.mark.parametrize("width", [1440, 390])
 def test_dashboard_real_browser(repo, mode, width):
     repo.db.connection.execute("UPDATE runs SET mode=?", (mode,))
-    repo.save_position(Position("SOLUSDT", PositionSide.LONG, D("0.1"), D("100"), D("1"),
-                                1, D("98"), D("104"), D("60"), PositionPhase.OPEN, "owned"))
+    repo.save_position(
+        Position(
+            "SOLUSDT",
+            PositionSide.LONG,
+            D("0.1"),
+            D("100"),
+            D("1"),
+            1,
+            D("98"),
+            D("104"),
+            D("60"),
+            PositionPhase.OPEN,
+            "owned",
+        )
+    )
     app = create_app(Settings(password_hash=PasswordHasher().hash("browser password")), repo)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -31,7 +43,7 @@ def test_dashboard_real_browser(repo, mode, width):
     thread.start()
     deadline = time.monotonic() + 10
     while not server.started and time.monotonic() < deadline:
-        time.sleep(.01)
+        time.sleep(0.01)
     assert server.started
     try:
         with sync_playwright() as pw:

@@ -47,9 +47,9 @@ async def raw_stream(
     try:
         await client.create_connection()
         for stream in streams:
-            await client.subscribe([stream], stream_url="private" if private else "market")
+            category = "private" if private else "public" if "@depth" in stream else "market"
+            await client.subscribe([stream], stream_url=category)
             client.on("message", received, stream)
-            client.on("error", lambda _: received({"gap": "STREAM_ERROR"}), stream)
         while True:
             try:
                 yield await asyncio.wait_for(queue.get(), timeout=10)
@@ -77,7 +77,9 @@ async def market_stream(adapter: Any, symbols: tuple[str, ...]) -> AsyncIterator
                 adapter.heartbeat_ms = min(at_ms, int(value.get("E", at_ms)))
                 event = value.get("e")
                 if event == "markPriceUpdate":
-                    yield MarkEvent(value["s"], int(value["E"]), D(value["p"]))
+                    yield MarkEvent(
+                        value["s"], int(value["E"]), D(value["p"]), D(value["r"]), int(value["T"])
+                    )
                 elif event == "kline":
                     k = value["k"]
                     candle = normalize_candle(
@@ -131,6 +133,7 @@ async def execution_stream(adapter: Any) -> AsyncIterator[ExecutionEvent]:
         renewal = asyncio.create_task(renew())
         try:
             async for value in raw_stream(adapter, (listen_key,), private=True):
+                value = value.get("data", value)
                 if "gap" in value or renewal.done():
                     raise ConnectionError("Private stream requires snapshot reconciliation")
                 if value.get("e") == "ORDER_TRADE_UPDATE":

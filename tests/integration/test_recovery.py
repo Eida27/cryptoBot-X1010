@@ -11,6 +11,7 @@ from tests.integration.test_protection import protect
 
 async def recover(repo, clock, exchange, engine=None):
     from crypto_bot.execution.reconciliation import Reconciler
+
     engine = engine or engine_for(repo, clock, exchange)
     return await Reconciler(engine).recover(await exchange.fetch_snapshot())
 
@@ -32,6 +33,7 @@ async def test_restart_preserves_original_floor_and_loss_halt(repo, clock):
     repo.latch_halt(repo.current_trial().run_id, "TRIAL_LOSS")
     exchange = FakeExchange(clock)
     from crypto_bot.execution.coordinator import ExecutionCoordinator
+
     engine = ExecutionCoordinator(repo, exchange, clock)
     await recover(repo, clock, exchange, engine)
     assert repo.current_trial().floor == D("18")
@@ -40,7 +42,9 @@ async def test_restart_preserves_original_floor_and_loss_halt(repo, clock):
 
 async def test_duplicate_funding_is_booked_once_and_reconciled_in_wallet(repo, clock):
     exchange = FakeExchange(clock)
-    event = IncomeEvent("PAPER", "virtual", "SOLUSDT", "fund1", "FUNDING_FEE", D("-0.01"), "USDT", clock.now_ms())
+    event = IncomeEvent(
+        "PAPER", "virtual", "SOLUSDT", "fund1", "FUNDING_FEE", D("-0.01"), "USDT", clock.now_ms()
+    )
     exchange.income = [event, event]
     exchange.wallet -= D("0.01")
     result = await recover(repo, clock, exchange)
@@ -52,7 +56,9 @@ async def test_duplicate_funding_is_booked_once_and_reconciled_in_wallet(repo, c
 async def test_external_deposit_cannot_mask_losses_or_change_baseline(repo, clock):
     exchange = FakeExchange(clock)
     exchange.wallet = D("200")
-    exchange.income = [IncomeEvent("PAPER", "virtual", "", "deposit", "TRANSFER", D("180"), "USDT", clock.now_ms())]
+    exchange.income = [
+        IncomeEvent("PAPER", "virtual", "", "deposit", "TRANSFER", D("180"), "USDT", clock.now_ms())
+    ]
     result = await recover(repo, clock, exchange)
     assert not result.entry_prerequisites_satisfied
     assert repo.current_trial().baseline == D("20")
@@ -83,7 +89,9 @@ async def test_filled_target_cleans_stale_open_position_on_restart(repo, clock):
     protect(engine)
     await engine.process_signal(signal(), context())
     target = next(i for i in repo.intents() if i.role == "TARGET")
-    exchange.orders[target.client_id] = replace(exchange.orders[target.client_id], state=OrderState.FILLED)
+    exchange.orders[target.client_id] = replace(
+        exchange.orders[target.client_id], state=OrderState.FILLED
+    )
     exchange.position = None
     result = await recover(repo, clock, exchange, engine)
     assert repo.position() is None
@@ -93,6 +101,7 @@ async def test_filled_target_cleans_stale_open_position_on_restart(repo, clock):
 
 async def test_sqlite_failure_prevents_entries_and_preserves_protection(repo, clock):
     from crypto_bot.execution.reconciliation import Reconciler
+
     exchange = FakeExchange(clock)
     engine = engine_for(repo, clock, exchange)
     protect(engine)

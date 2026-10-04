@@ -1,10 +1,11 @@
+from decimal import Decimal
+
 import pytest
 
 from crypto_bot.domain.clock import FakeClock
+from crypto_bot.domain.enums import Mode
 from crypto_bot.storage.database import Database
 from crypto_bot.storage.repository import Repository
-from crypto_bot.domain.enums import Mode
-from decimal import Decimal
 
 
 @pytest.fixture

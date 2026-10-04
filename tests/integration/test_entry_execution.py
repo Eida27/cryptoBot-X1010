@@ -8,6 +8,7 @@ from tests.fixtures.factories import context, signal
 
 def engine_for(repo, clock, exchange):
     from crypto_bot.execution.coordinator import ExecutionCoordinator
+
     repo.mark_reconciled(clock.now_ms(), True)
     assert repo.resume(repo.current_trial().run_id)
     return ExecutionCoordinator(repo, exchange, clock)
@@ -52,13 +53,16 @@ async def test_out_of_order_cumulative_quantity_cannot_erase_fills(repo, clock):
     await engine.process_signal(signal(), context())
     intent = repo.intents()[0]
     observed = repo.order(intent.client_id)
-    repo.record_order(replace(observed, cumulative_quantity=D("0.01"), state=OrderState.PARTIALLY_FILLED))
+    repo.record_order(
+        replace(observed, cumulative_quantity=D("0.01"), state=OrderState.PARTIALLY_FILLED)
+    )
     assert repo.order(intent.client_id).cumulative_quantity == D("0.08")
     assert repo.order(intent.client_id).state is OrderState.FILLED
 
 
 async def test_prepared_intent_after_crash_never_auto_resubmits(repo, clock):
     from crypto_bot.domain.models import ApprovedSize
+
     exchange = FakeExchange(clock)
     engine = engine_for(repo, clock, exchange)
     repo.reserve_entry(signal(), ApprovedSize(D("0.08"), D("8"), D("0.1872"), D("0.2")))

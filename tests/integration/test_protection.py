@@ -9,6 +9,7 @@ from tests.integration.test_entry_execution import engine_for
 
 def protect(engine):
     from crypto_bot.execution.protection import ProtectionManager
+
     return ProtectionManager(engine)
 
 
@@ -18,7 +19,9 @@ async def test_first_partial_fill_is_protected_while_acknowledgement_is_ambiguou
     protect(engine)
     exchange.accept_then_timeout(partial=True)
     await engine.process_signal(signal(), context())
-    assert any(call[0] == "protection" and call[1].role == "PROVISIONAL_STOP" for call in exchange.calls)
+    assert any(
+        call[0] == "protection" and call[1].role == "PROVISIONAL_STOP" for call in exchange.calls
+    )
     assert repo.position().phase is PositionPhase.PROTECTING
     assert repo.has_unresolved_intent(signal().identity)
 
@@ -41,11 +44,12 @@ async def test_replacement_is_installed_before_provisional_retirement(repo, cloc
     exchange = FakeExchange(clock)
     exchange.entry_mode = "partial"
     engine = engine_for(repo, clock, exchange)
-    manager = protect(engine)
+    protect(engine)
     await engine.process_signal(signal(), context())
     intent = repo.intents()[0]
-    exchange.orders[intent.client_id] = replace(exchange.orders[intent.client_id], state=OrderState.FILLED,
-                                               cumulative_quantity=D("0.08"))
+    exchange.orders[intent.client_id] = replace(
+        exchange.orders[intent.client_id], state=OrderState.FILLED, cumulative_quantity=D("0.08")
+    )
     exchange.position = replace(exchange.position, quantity=D("0.08"))
     await engine.reconcile_entries()
     roles = [call[1].role for call in exchange.calls if call[0] in {"protection", "cancel"}]
@@ -86,16 +90,25 @@ async def test_sdk_conditional_payload_uses_close_all_without_incompatible_param
     from crypto_bot.domain.enums import OrderSide
     from crypto_bot.exchange.binance_adapter import BinanceAdapter
     from crypto_bot.storage.repository import make_intent
+
     class Transport:
         base_url = "https://demo-fapi.binance.com"
         calls = []
+
         async def request(self, method, path, signed, params):
             self.calls.append((method, path, signed, params))
-            return {"clientAlgoId": params["clientAlgoId"], "algoId": 1, "symbol": "SOLUSDT", "algoStatus": "NEW"}
+            return {
+                "clientAlgoId": params["clientAlgoId"],
+                "algoId": 1,
+                "symbol": "SOLUSDT",
+                "algoStatus": "NEW",
+            }
+
     transport = Transport()
     adapter = BinanceAdapter(Settings(mode="DEMO"), private=True, transport=transport)
-    await adapter.submit_protection(make_intent("r", "s", "STOP", 1, "SOLUSDT", OrderSide.SELL,
-                                               trigger_price=D("98.01")))
+    await adapter.submit_protection(
+        make_intent("r", "s", "STOP", 1, "SOLUSDT", OrderSide.SELL, trigger_price=D("98.01"))
+    )
     params = transport.calls[0][3]
     assert transport.calls[0][:3] == ("POST", "/fapi/v1/algoOrder", True)
     assert params["closePosition"] == "true" and params["workingType"] == "MARK_PRICE"
@@ -111,7 +124,9 @@ async def test_completed_target_and_crossed_exits_clean_siblings_without_fault_h
     position = repo.position()
     target = next(i for i in repo.intents() if i.role == "TARGET")
     exchange.position = None
-    exchange.orders[target.client_id] = replace(exchange.orders[target.client_id], state=OrderState.FILLED)
+    exchange.orders[target.client_id] = replace(
+        exchange.orders[target.client_id], state=OrderState.FILLED
+    )
     result = await manager.ensure_protection(position.intent_id)
     assert result.confirmed
     assert repo.position() is None and not repo.has_active_slot()

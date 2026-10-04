@@ -33,13 +33,32 @@ class Reconciler:
             position = self.last_verified_owned
             self.emergency_log.parent.mkdir(parents=True, exist_ok=True)
             with self.emergency_log.open("a", encoding="utf-8") as log:
-                log.write(encode({"at_ms": snapshot.observed_ms, "reason": "STORAGE_UNAVAILABLE",
-                                  "owned": position}) + "\n")
+                log.write(
+                    encode(
+                        {
+                            "at_ms": snapshot.observed_ms,
+                            "reason": "STORAGE_UNAVAILABLE",
+                            "owned": position,
+                        }
+                    )
+                    + "\n"
+                )
             if position:
-                real = next((p for p in snapshot.positions if p.symbol == position.symbol and p.side is position.side), None)
+                real = next(
+                    (
+                        p
+                        for p in snapshot.positions
+                        if p.symbol == position.symbol and p.side is position.side
+                    ),
+                    None,
+                )
                 if real and real.quantity <= position.quantity:
-                    await self.exchange.reduce_position(real.symbol, real.side, real.quantity,
-                        "cb-emergency-" + str(snapshot.observed_ms))
+                    await self.exchange.reduce_position(
+                        real.symbol,
+                        real.side,
+                        real.quantity,
+                        "cb-emergency-" + str(snapshot.observed_ms),
+                    )
             return RecoveryResult(position, (), (), ("STORAGE_UNAVAILABLE",), False)
 
     async def _recover(self, snapshot: ExchangeSnapshot) -> RecoveryResult:
@@ -47,7 +66,11 @@ class Reconciler:
         if trial is None:
             return RecoveryResult(None, (), (), ("NO_TRIAL",), False)
         mismatches: list[str] = []
-        known = {intent.client_id: intent for intent in self.repo.intents() if intent.run_id == trial.run_id}
+        known = {
+            intent.client_id: intent
+            for intent in self.repo.intents()
+            if intent.run_id == trial.run_id
+        }
         slot = self.repo.db.connection.execute("SELECT intent_id FROM active_slot").fetchone()
         active_identity = slot[0] if slot else None
         observed = {o.client_id: o for o in snapshot.ordinary_orders + snapshot.algo_orders}
@@ -60,7 +83,11 @@ class Reconciler:
             old = self.repo.order(client_id)
             if old and old.state.terminal and not order.state.terminal:
                 mismatches.append("ORDER_STATE_CONFLICT")
-            if intent.role == "ENTRY" and intent.logical_id == active_identity and snapshot.positions:
+            if (
+                intent.role == "ENTRY"
+                and intent.logical_id == active_identity
+                and snapshot.positions
+            ):
                 self.engine.apply_observation(intent, order)
             else:
                 self.repo.record_order(order)
@@ -70,13 +97,23 @@ class Reconciler:
             state = self.repo.intent_state(intent.logical_id)
             if state.terminal:
                 continue
-            order = await self.exchange.find_order(intent)
-            if order is not None:
-                if intent.role == "ENTRY" and intent.logical_id == active_identity and snapshot.positions:
-                    self.engine.apply_observation(intent, order)
+            found_order = await self.exchange.find_order(intent)
+            if found_order is not None:
+                if (
+                    intent.role == "ENTRY"
+                    and intent.logical_id == active_identity
+                    and snapshot.positions
+                ):
+                    self.engine.apply_observation(intent, found_order)
                 else:
-                    self.repo.record_order(order)
-        venue_ids = {order.venue_id for client in known if (order := self.repo.order(client))}
+                    self.repo.record_order(found_order)
+        venue_ids = set()
+        for client in known:
+            current = self.repo.order(client)
+            if current:
+                venue_ids.add(current.venue_id)
+                if current.actual_order_id:
+                    venue_ids.add(current.actual_order_id)
         for fill in snapshot.fills:
             if fill.order_id not in venue_ids and fill.order_id not in known:
                 mismatches.append("UNATTRIBUTED_FILL")
@@ -98,21 +135,27 @@ class Reconciler:
                 if not any(i.role == "EXIT" for i in known.values()):
                     mismatches.append("QUANTITY_MISMATCH")
                 else:
-                    self.repo.save_position(replace(owned, quantity=real.quantity,
-                                                   liquidation_price=real.liquidation_price))
+                    self.repo.save_position(
+                        replace(
+                            owned, quantity=real.quantity, liquidation_price=real.liquidation_price
+                        )
+                    )
             else:
                 self.repo.save_position(replace(owned, liquidation_price=real.liquidation_price))
                 self.last_verified_owned = self.repo.position()
         if owned is not None and not snapshot.positions:
+            self.engine.finalize_trade(owned, snapshot, "EXCHANGE_EXIT")
             await self.engine.cleanup_flat()
         elif owned is not None and self.engine.protection and not mismatches:
             await self.engine.protection.ensure_protection(owned.intent_id)
         # Booked wallet already contains commissions/funding. Reconcile, do not subtract
         # these events again when computing mark equity or the shutdown floor.
         fills = [f for f in self.repo.fills() if f.commission_asset == "USDT"]
-        income = [i for i in self.repo.income_events() if i.asset == "USDT"]
+        incomes = [i for i in self.repo.income_events() if i.asset == "USDT"]
         expected_wallet = trial.baseline - sum((f.commission for f in fills), D("0"))
-        expected_wallet += sum((i.amount for i in income if i.income_type in {"FUNDING_FEE", "REALIZED_PNL"}), D("0"))
+        expected_wallet += sum(
+            (i.amount for i in incomes if i.income_type in {"FUNDING_FEE", "REALIZED_PNL"}), D("0")
+        )
         if abs(expected_wallet - snapshot.account.wallet_balance) > D("0.01"):
             mismatches.append("WALLET_LEDGER_MISMATCH")
         unresolved_intents, unresolved_orders = [], []
@@ -120,7 +163,8 @@ class Reconciler:
         for intent in known.values():
             state = self.repo.intent_state(intent.logical_id)
             if state in {OrderState.PREPARED, OrderState.SUBMITTED, OrderState.UNKNOWN} or (
-                intent.role == "ENTRY" and not state.terminal):
+                intent.role == "ENTRY" and not state.terminal
+            ):
                 unresolved_intents.append(intent.logical_id)
             if intent.role in {"STOP", "TARGET", "PROVISIONAL_STOP"} and not state.terminal:
                 if position is None or state is not OrderState.ACKNOWLEDGED:
@@ -131,5 +175,10 @@ class Reconciler:
             self.repo.latch_halt(trial.run_id, "ACCOUNT_RECONCILIATION")
         healthy = not mismatches and not unresolved_intents and not unresolved_orders
         self.repo.mark_reconciled(snapshot.observed_ms, healthy)
-        return RecoveryResult(position, tuple(unresolved_intents), tuple(unresolved_orders),
-                              tuple(dict.fromkeys(mismatches)), healthy)
+        return RecoveryResult(
+            position,
+            tuple(unresolved_intents),
+            tuple(unresolved_orders),
+            tuple(dict.fromkeys(mismatches)),
+            healthy,
+        )

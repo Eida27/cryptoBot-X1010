@@ -34,7 +34,9 @@ class Auth:
             if len(attempts) >= 5:
                 raise HTTPException(429, "Login temporarily throttled")
         try:
-            accepted = bool(self.password_hash) and PasswordHasher().verify(self.password_hash, password)
+            accepted = bool(self.password_hash) and PasswordHasher().verify(
+                self.password_hash, password
+            )
         except (VerificationError, InvalidHashError):
             accepted = False
         if not accepted:
@@ -45,17 +47,28 @@ class Auth:
     def create_session(self) -> tuple[str, str]:
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         now = self.clock.now_ms()
-        self.repo.db.connection.execute("DELETE FROM web_sessions WHERE revoked=1 OR last_seen_ms<?", (now - 1800000,))
-        self.repo.db.connection.execute("INSERT INTO web_sessions VALUES(?,?,?,?,0)", (token_hash(token), token_hash(csrf), now, now))
+        self.repo.db.connection.execute(
+            "DELETE FROM web_sessions WHERE revoked=1 OR last_seen_ms<?", (now - 1800000,)
+        )
+        self.repo.db.connection.execute(
+            "INSERT INTO web_sessions VALUES(?,?,?,?,0)",
+            (token_hash(token), token_hash(csrf), now, now),
+        )
         return token, csrf
 
-    def session(self, request: Request, csrf: str | None = None) -> Any:
+    def session(self, request: Request, csrf: str | None = None, *, touch: bool = True) -> Any:
         token = request.cookies.get("cbot_session", "")
-        row = self.repo.db.connection.execute("SELECT * FROM web_sessions WHERE token_hash=?", (token_hash(token),)).fetchone()
+        row = self.repo.db.connection.execute(
+            "SELECT * FROM web_sessions WHERE token_hash=?", (token_hash(token),)
+        ).fetchone()
         now = self.clock.now_ms()
         if row is None or row["revoked"] or not 0 <= now - row["last_seen_ms"] < 1800000:
             raise HTTPException(401, "Session expired; sign in again")
         if csrf is not None and not secrets.compare_digest(row["csrf_hash"], token_hash(csrf)):
             raise HTTPException(403, "Invalid CSRF token")
-        self.repo.db.connection.execute("UPDATE web_sessions SET last_seen_ms=? WHERE token_hash=?", (now, row["token_hash"]))
+        if touch:
+            self.repo.db.connection.execute(
+                "UPDATE web_sessions SET last_seen_ms=? WHERE token_hash=?",
+                (now, row["token_hash"]),
+            )
         return row

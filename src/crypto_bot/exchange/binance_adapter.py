@@ -1,7 +1,8 @@
 import asyncio
-from decimal import Decimal as D
+import json
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from decimal import Decimal as D
+from typing import Any, cast
 
 from binance_common.configuration import ConfigurationRestAPI
 from binance_common.utils import send_request
@@ -12,8 +13,17 @@ from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futur
 from crypto_bot.config import ConfigurationError, Settings, validate_mode
 from crypto_bot.domain.clock import Clock, SystemClock
 from crypto_bot.domain.enums import PositionSide
-from crypto_bot.domain.models import ExchangeSnapshot, SymbolRules, OrderIntent, SubmitResult, SubmitAck, SubmitUnknown, SubmitRejected, OrderObservation
-from crypto_bot.exchange.normalization import normalize_rules, normalize_snapshot, normalize_order
+from crypto_bot.domain.models import (
+    ExchangeSnapshot,
+    OrderIntent,
+    OrderObservation,
+    SubmitAck,
+    SubmitRejected,
+    SubmitResult,
+    SubmitUnknown,
+    SymbolRules,
+)
+from crypto_bot.exchange.normalization import normalize_order, normalize_rules, normalize_snapshot
 
 # Generic SDK request methods preserve decimal strings before generated model coercion.
 READ_ENDPOINTS = {
@@ -37,6 +47,7 @@ READ_ENDPOINTS = {
     "position_mode": ("/fapi/v1/positionSide/dual", True),
     "asset_mode": ("/fapi/v1/multiAssetsMargin", True),
     "fee_burn": ("/fapi/v1/feeBurn", True),
+    "symbol_config": ("/fapi/v1/symbolConfig", True),
     "query_order": ("/fapi/v1/order", True),
     "query_algo_order": ("/fapi/v1/algoOrder", True),
 }
@@ -64,7 +75,7 @@ class SDKTransport:
             raise ConfigurationError("Public client cannot access private endpoints")
         api = self.client.rest_api
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(
+        future: asyncio.Future[Any] = loop.run_in_executor(
             self.executor,
             lambda: send_request(
                 api._session,
@@ -73,7 +84,7 @@ class SDKTransport:
                 endpoint,
                 payload=params,
                 is_signed=signed,
-                signer=api._signer,
+                signer=cast(Any, api._signer),
             ).data(),
         )
         self.pending.add(future)
@@ -107,6 +118,19 @@ class BinanceAdapter:
         self.heartbeat_ms = 0
         self.account_id = "configured-wallet"
         self.live_armed = False
+        self.history_start_ms: int | None = None
+
+    def public_brackets(self) -> dict[str, Any]:
+        path = self.settings.bracket_metadata
+        if path is None:
+            return {}
+        data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            data.get("environment") not in {"DEMO", "LIVE"}
+            or not 0 <= self.clock.now_ms() - int(data.get("observed_ms", 0)) <= 21600000
+        ):
+            raise ConfigurationError("Maintenance metadata is missing or older than six hours")
+        return data
 
     async def read(self, method: str, **params: Any) -> Any:
         if method in READ_ENDPOINTS and READ_ENDPOINTS[method][1] and not self.private:
@@ -138,6 +162,10 @@ class BinanceAdapter:
         if self.private:
             brackets = await self.read("brackets", symbol=symbol)
             bracket = brackets[0]["brackets"][0]
+        elif self.settings.bracket_metadata:
+            metadata = self.public_brackets()
+            bracket = metadata["brackets"].get(symbol)
+            observed_ms = min(observed_ms, int(metadata["observed_ms"]))
         return normalize_rules(value, observed_ms, bracket)
 
     async def fetch_snapshot(self) -> ExchangeSnapshot:
@@ -154,10 +182,31 @@ class BinanceAdapter:
             ("algo_orders", "open_algo_orders"),
             ("income", "income"),
         ):
-            payload[name] = await self.read(method)
+            params = (
+                {"startTime": self.history_start_ms, "limit": 1000}
+                if method == "income" and self.history_start_ms is not None
+                else {}
+            )
+            payload[name] = await self.read(method, **params)
+            if method == "income" and len(payload[name]) >= 1000:
+                raise ConfigurationError(
+                    "Income page saturated; reconciliation requires complete pagination"
+                )
+            if name == "account":
+                payload["account_observed_ms"] = self.clock.now_ms()
         payload["fills"] = []
         for symbol in self.settings.symbols:
-            payload["fills"].extend(await self.read("fills", symbol=symbol))
+            params = (
+                {"startTime": self.history_start_ms, "limit": 1000}
+                if self.history_start_ms is not None
+                else {}
+            )
+            fills = await self.read("fills", symbol=symbol, **params)
+            if len(fills) >= 1000:
+                raise ConfigurationError(
+                    "Fill page saturated; reconciliation requires complete pagination"
+                )
+            payload["fills"].extend(fills)
         payload["observed_ms"] = self.clock.now_ms()
         return normalize_snapshot(payload)
 
@@ -174,7 +223,9 @@ class BinanceAdapter:
     async def mutate(self, method: str, endpoint: str, params: dict[str, Any]) -> SubmitResult:
         if not self.private:
             raise ConfigurationError("Public adapter cannot mutate orders")
-        if self.settings.mode.value == "LIVE" and (not self.settings.live_trading_enabled or not self.live_armed):
+        if self.settings.mode.value == "LIVE" and (
+            not self.settings.live_trading_enabled or not self.live_armed
+        ):
             return SubmitRejected("LIVE_DISABLED")
         try:
             raw = await self.transport.request(method, endpoint, True, params)
@@ -183,21 +234,40 @@ class BinanceAdapter:
             namespace = "algo" if "algo" in endpoint.lower() else "ordinary"
             return SubmitAck(normalize_order(raw, self.clock.now_ms(), namespace))
         except Exception as exc:
-            if exc.__class__.__name__ == "BadRequestError" and getattr(exc, "status_code", 0) not in {-1006, -1007}:
+            if exc.__class__.__name__ == "BadRequestError" and getattr(
+                exc, "status_code", 0
+            ) not in {-1006, -1007}:
                 return SubmitRejected(f"VENUE_REJECTED_{getattr(exc, 'status_code', 'UNKNOWN')}")
             return SubmitUnknown()
 
     async def submit_entry(self, intent: OrderIntent) -> SubmitResult:
-        return await self.mutate("POST", "/fapi/v1/order", {"symbol": intent.symbol,
-            "side": intent.side.value, "type": "LIMIT", "timeInForce": "IOC", "positionSide": "BOTH",
-            "quantity": str(intent.quantity), "price": str(intent.limit_price),
-            "newClientOrderId": intent.client_id, "newOrderRespType": "RESULT"})
+        return await self.mutate(
+            "POST",
+            "/fapi/v1/order",
+            {
+                "symbol": intent.symbol,
+                "side": intent.side.value,
+                "type": "LIMIT",
+                "timeInForce": "IOC",
+                "positionSide": "BOTH",
+                "quantity": str(intent.quantity),
+                "price": str(intent.limit_price),
+                "newClientOrderId": intent.client_id,
+                "newOrderRespType": "RESULT",
+            },
+        )
 
     async def find_order(self, intent: OrderIntent) -> OrderObservation | None:
         algo = intent.role in {"STOP", "TARGET", "PROVISIONAL_STOP"}
         try:
-            raw = await self.read("query_algo_order" if algo else "query_order", **(
-                {"clientAlgoId": intent.client_id} if algo else {"symbol": intent.symbol, "origClientOrderId": intent.client_id}))
+            raw = await self.read(
+                "query_algo_order" if algo else "query_order",
+                **(
+                    {"clientAlgoId": intent.client_id}
+                    if algo
+                    else {"symbol": intent.symbol, "origClientOrderId": intent.client_id}
+                ),
+            )
             return normalize_order(raw, self.clock.now_ms(), "algo" if algo else "ordinary")
         except Exception as exc:
             if getattr(exc, "status_code", 0) in {-2013, -2011, 404}:
@@ -206,19 +276,45 @@ class BinanceAdapter:
 
     async def cancel_order(self, intent: OrderIntent) -> SubmitResult:
         algo = intent.role in {"STOP", "TARGET", "PROVISIONAL_STOP"}
-        return await self.mutate("DELETE", "/fapi/v1/algoOrder" if algo else "/fapi/v1/order",
-            {"clientAlgoId": intent.client_id} if algo else {"symbol": intent.symbol, "origClientOrderId": intent.client_id})
+        return await self.mutate(
+            "DELETE",
+            "/fapi/v1/algoOrder" if algo else "/fapi/v1/order",
+            {"clientAlgoId": intent.client_id}
+            if algo
+            else {"symbol": intent.symbol, "origClientOrderId": intent.client_id},
+        )
 
     async def submit_protection(self, intent: OrderIntent) -> SubmitResult:
-        return await self.mutate("POST", "/fapi/v1/algoOrder", {"algoType": "CONDITIONAL",
-            "symbol": intent.symbol, "side": intent.side.value, "positionSide": "BOTH",
-            "type": "TAKE_PROFIT_MARKET" if intent.role == "TARGET" else "STOP_MARKET",
-            "triggerPrice": str(intent.trigger_price), "workingType": "MARK_PRICE",
-            "closePosition": "true", "clientAlgoId": intent.client_id})
+        return await self.mutate(
+            "POST",
+            "/fapi/v1/algoOrder",
+            {
+                "algoType": "CONDITIONAL",
+                "symbol": intent.symbol,
+                "side": intent.side.value,
+                "positionSide": "BOTH",
+                "type": "TAKE_PROFIT_MARKET" if intent.role == "TARGET" else "STOP_MARKET",
+                "triggerPrice": str(intent.trigger_price),
+                "workingType": "MARK_PRICE",
+                "closePosition": "true",
+                "clientAlgoId": intent.client_id,
+            },
+        )
 
-    async def reduce_position(self, symbol: str, side: PositionSide, quantity: D,
-                              client_id: str) -> SubmitResult:
-        return await self.mutate("POST", "/fapi/v1/order", {"symbol": symbol,
-            "side": "SELL" if side is PositionSide.LONG else "BUY", "positionSide": "BOTH",
-            "type": "MARKET", "reduceOnly": "true", "quantity": str(quantity),
-            "newClientOrderId": client_id, "newOrderRespType": "RESULT"})
+    async def reduce_position(
+        self, symbol: str, side: PositionSide, quantity: D, client_id: str
+    ) -> SubmitResult:
+        return await self.mutate(
+            "POST",
+            "/fapi/v1/order",
+            {
+                "symbol": symbol,
+                "side": "SELL" if side is PositionSide.LONG else "BUY",
+                "positionSide": "BOTH",
+                "type": "MARKET",
+                "reduceOnly": "true",
+                "quantity": str(quantity),
+                "newClientOrderId": client_id,
+                "newOrderRespType": "RESULT",
+            },
+        )

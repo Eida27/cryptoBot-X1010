@@ -2,8 +2,16 @@ from dataclasses import replace
 from decimal import Decimal as D
 
 from crypto_bot.domain.enums import OrderSide, OrderState, PositionSide
-from crypto_bot.domain.models import (AccountSnapshot, ExchangeSnapshot, FillEvent,
-    OrderObservation, Position, SubmitAck, SubmitRejected, SubmitUnknown)
+from crypto_bot.domain.models import (
+    AccountSnapshot,
+    ExchangeSnapshot,
+    FillEvent,
+    OrderObservation,
+    Position,
+    SubmitAck,
+    SubmitRejected,
+    SubmitUnknown,
+)
 from tests.fixtures.factories import context
 
 
@@ -37,9 +45,15 @@ class FakeExchange:
         if self.hidden and self.entry_mode != "partial_unknown":
             ordinary = ()
         algo = tuple(o for o in self.orders.values() if o.namespace == "algo")
-        return ExchangeSnapshot(self.clock.now_ms(), AccountSnapshot(self.clock.now_ms(), self.wallet,
-                D("0"), self.wallet), () if self.position is None else (self.position,),
-                ordinary, algo, tuple(self.fills), tuple(self.income))
+        return ExchangeSnapshot(
+            self.clock.now_ms(),
+            AccountSnapshot(self.clock.now_ms(), self.wallet, D("0"), self.wallet),
+            () if self.position is None else (self.position,),
+            ordinary,
+            algo,
+            tuple(self.fills),
+            tuple(self.income),
+        )
 
     async def fetch_rules(self, symbol):
         return context(self.clock.now_ms()).rules
@@ -52,17 +66,46 @@ class FakeExchange:
         state = OrderState.PARTIALLY_FILLED if "partial" in self.entry_mode else OrderState.FILLED
         if self.entry_mode == "zero":
             qty, state = D("0"), OrderState.EXPIRED
-        observed = OrderObservation(intent.client_id, str(len(self.orders) + 1), "ordinary", intent.symbol,
-                    state, qty, D("100"), self.clock.now_ms() if qty else None, self.clock.now_ms())
+        observed = OrderObservation(
+            intent.client_id,
+            str(len(self.orders) + 1),
+            "ordinary",
+            intent.symbol,
+            state,
+            qty,
+            D("100"),
+            self.clock.now_ms() if qty else None,
+            self.clock.now_ms(),
+        )
         self.orders[intent.client_id] = observed
         if qty:
             side = PositionSide.LONG if intent.side is OrderSide.BUY else PositionSide.SHORT
-            self.position = Position(intent.symbol, side, qty, D("100"), D("1"), self.clock.now_ms(),
-                                      liquidation_price=D("50") if side is PositionSide.LONG else D("150"))
+            self.position = Position(
+                intent.symbol,
+                side,
+                qty,
+                D("100"),
+                D("1"),
+                self.clock.now_ms(),
+                liquidation_price=D("50") if side is PositionSide.LONG else D("150"),
+            )
             fee = qty * D("100") * D("0.0006")
             self.wallet -= fee
-            self.fills.append(FillEvent("PAPER", "virtual", intent.symbol, str(len(self.fills) + 1),
-                observed.venue_id, D("100"), qty, fee, "USDT", self.clock.now_ms(), intent.side))
+            self.fills.append(
+                FillEvent(
+                    "PAPER",
+                    "virtual",
+                    intent.symbol,
+                    str(len(self.fills) + 1),
+                    observed.venue_id,
+                    D("100"),
+                    qty,
+                    fee,
+                    "USDT",
+                    self.clock.now_ms(),
+                    intent.side,
+                )
+            )
         return SubmitUnknown() if "unknown" in self.entry_mode else SubmitAck(observed)
 
     async def find_order(self, intent):
@@ -72,8 +115,14 @@ class FakeExchange:
         self.calls.append(("protection", intent))
         if self.reject_protection:
             return SubmitRejected("PROTECTION_REJECTED")
-        value = OrderObservation(intent.client_id, str(len(self.orders) + 1), "algo", intent.symbol,
-                                  OrderState.ACKNOWLEDGED, observed_ms=self.clock.now_ms())
+        value = OrderObservation(
+            intent.client_id,
+            str(len(self.orders) + 1),
+            "algo",
+            intent.symbol,
+            OrderState.ACKNOWLEDGED,
+            observed_ms=self.clock.now_ms(),
+        )
         self.orders[intent.client_id] = value
         return SubmitAck(value)
 
@@ -98,8 +147,21 @@ class FakeExchange:
             return SubmitRejected("ALREADY_FLAT")
         assert symbol == self.position.symbol and side is self.position.side
         qty = min(quantity, self.position.quantity)
-        self.position = replace(self.position, quantity=self.position.quantity - qty) if qty < self.position.quantity else None
-        value = OrderObservation(client_id, str(len(self.orders) + 1), "ordinary", symbol,
-                                  OrderState.FILLED, qty, D("100"), self.clock.now_ms(), self.clock.now_ms())
+        self.position = (
+            replace(self.position, quantity=self.position.quantity - qty)
+            if qty < self.position.quantity
+            else None
+        )
+        value = OrderObservation(
+            client_id,
+            str(len(self.orders) + 1),
+            "ordinary",
+            symbol,
+            OrderState.FILLED,
+            qty,
+            D("100"),
+            self.clock.now_ms(),
+            self.clock.now_ms(),
+        )
         self.orders[client_id] = value
         return SubmitAck(value)

@@ -2,7 +2,8 @@ from dataclasses import replace
 from decimal import Decimal as D
 
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 from crypto_bot.domain.enums import Mode, PositionSide
 from crypto_bot.domain.models import ApprovedSize, RiskInput, Trial
@@ -96,7 +97,7 @@ def test_tick_rounding_moves_stop_toward_entry_and_target_away():
 
 
 def test_near_floor_and_higher_funding_never_manufacture_affordability():
-    from crypto_bot.risk.sizing import size_entry, adverse_funding_reserve
+    from crypto_bot.risk.sizing import adverse_funding_reserve, size_entry
 
     case = risk_case()
     assert adverse_funding_reserve(replace(case.context.funding, interval_hours=D("4"))) == D(

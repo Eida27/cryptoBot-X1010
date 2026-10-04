@@ -102,31 +102,93 @@ class EvidenceBundle:
 
 def evaluate_gates(evidence: EvidenceBundle, settings: Settings) -> GateReport:
     expected = {"config": settings.config_hash, "strategy": STRATEGY_HASH, "code": code_hash()}
-    mismatch = evidence.allocation != settings.initial_capital_usdt or any(evidence.hashes.get(k) != v for k, v in expected.items()) or not evidence.hashes.get("data")
+    mismatch = (
+        evidence.allocation != settings.initial_capital_usdt
+        or any(evidence.hashes.get(k) != v for k, v in expected.items())
+        or not evidence.hashes.get("data")
+    )
     gates: list[Gate] = []
+
     def add(identity: str, failure: list[str], missing: list[str]) -> None:
         if mismatch:
             failure.insert(0, "Capital/configuration/strategy/code/data binding is invalid")
-        gates.append(Gate(identity, GateStatus.FAIL if failure else GateStatus.NOT_YET_OBSERVED if missing else GateStatus.PASS, tuple(failure or missing or ["Verified against bound evidence"])))
-    for identity, verified in (("G1", evidence.logic_verified), ("G2", evidence.execution_verified)):
-        add(identity, ["Verification failed"] if verified is False else [], ["Verification evidence absent"] if verified is None else [])
+        gates.append(
+            Gate(
+                identity,
+                GateStatus.FAIL
+                if failure
+                else GateStatus.NOT_YET_OBSERVED
+                if missing
+                else GateStatus.PASS,
+                tuple(failure or missing or ["Verified against bound evidence"]),
+            )
+        )
+
+    for identity, verified in (
+        ("G1", evidence.logic_verified),
+        ("G2", evidence.execution_verified),
+    ):
+        add(
+            identity,
+            ["Verification failed"] if verified is False else [],
+            ["Verification evidence absent"] if verified is None else [],
+        )
     fail, missing = [], []
     for label, case in (("base", evidence.historical_base), ("stress", evidence.historical_stress)):
         if case is None:
             missing.append(f"{label}: historical holdout not observed")
             continue
-        if case.hashes != evidence.hashes or not case.actual_funding or not case.complete or case.loss_halt or case.liquidation or case.net_pnl <= 0 or not D("0") <= case.max_drawdown <= D("0.10"):
+        if (
+            case.hashes != evidence.hashes
+            or not case.actual_funding
+            or not case.complete
+            or case.loss_halt
+            or case.liquidation
+            or case.net_pnl <= 0
+            or not D("0") <= case.max_drawdown <= D("0.10")
+        ):
             fail.append(f"{label}: incomplete/unprofitable/unsafe historical evidence")
         if case.months < 24 or case.closed_trades < 50:
             missing.append(f"{label}: requires 24 months and at least 50 closed holdout trades")
     add("G3", fail, missing)
     demo = evidence.demo
-    demo_keys = ("ordinary_lifecycle", "conditional_lifecycle", "close_semantics", "sibling_cleanup", "reconnect", "mutation_retry_suppression")
-    add("G4", ["Demo lifecycle failed or hashes changed"] if demo and (demo.get("hashes") != evidence.hashes or any(demo.get(k) is False for k in demo_keys)) else [],
-        ["Real opted-in demo lifecycle evidence absent"] if not demo or not all(demo.get(k) is True for k in demo_keys) else [])
+    demo_keys = (
+        "ordinary_lifecycle",
+        "conditional_lifecycle",
+        "close_semantics",
+        "sibling_cleanup",
+        "reconnect",
+        "mutation_retry_suppression",
+        "partial_zero_fill",
+        "private_reconnect",
+    )
+    add(
+        "G4",
+        ["Demo lifecycle failed or hashes changed"]
+        if demo
+        and (demo.get("hashes") != evidence.hashes or any(demo.get(k) is False for k in demo_keys))
+        else [],
+        ["Real opted-in demo lifecycle evidence absent"]
+        if not demo or not all(demo.get(k) is True for k in demo_keys)
+        else [],
+    )
     paper = evidence.paper
-    add("G5", ["Forward observation interrupted, unsafe, unprofitable or hashes changed"] if paper and (paper.hashes != evidence.hashes or paper.interruptions or paper.ledger_mismatch or paper.loss_halt or paper.net_pnl <= 0) else [],
-        ["Requires 30 uninterrupted days and 20 closed paper trades"] if paper is None or paper.observed_ms < 30 * 86400000 or paper.closed_trades < 20 else [])
+    add(
+        "G5",
+        ["Forward observation interrupted, unsafe, unprofitable or hashes changed"]
+        if paper
+        and (
+            paper.hashes != evidence.hashes
+            or paper.interruptions
+            or paper.ledger_mismatch
+            or paper.loss_halt
+            or paper.net_pnl <= 0
+        )
+        else [],
+        ["Requires 30 uninterrupted days and 20 closed paper trades"]
+        if paper is None or paper.observed_ms < 30 * 86400000 or paper.closed_trades < 20
+        else [],
+    )
     ops = evidence.operations
     failures: list[str] = []
     absent: list[str] = []
@@ -137,45 +199,99 @@ def evaluate_gates(evidence: EvidenceBundle, settings: Settings) -> GateReport:
     else:
         if ops.get("hashes") != evidence.hashes:
             failures.append("Operational evidence hashes differ")
-        for key in ("backup_restore", "private_access", "account_eligible", "capital_feasible", "clock_sync", "no_restart_oom_backlog"):
+        for key in (
+            "backup_restore",
+            "private_access",
+            "account_eligible",
+            "capital_feasible",
+            "clock_sync",
+            "no_restart_oom_backlog",
+        ):
             if ops.get(key) is False:
                 failures.append(f"{key} failed")
             elif ops.get(key) is not True:
                 absent.append(f"{key} not observed")
         if int(ops.get("duration_seconds", 0)) < 72 * 3600:
             absent.append("72-hour resource rehearsal absent")
-        for key, maximum in (("peak_memory_mib", D("700")), ("average_cpu_percent", D("25")), ("p99_loop_lag_seconds", D("1"))):
+        for key, maximum in (
+            ("peak_memory_mib", D("700")),
+            ("average_cpu_percent", D("25")),
+            ("p99_loop_lag_seconds", D("1")),
+        ):
             if key not in ops:
                 absent.append(f"{key} not measured")
-            elif not D(str(ops[key])).is_finite() or D(str(ops[key])) < 0 or D(str(ops[key])) >= maximum:
+            elif (
+                not D(str(ops[key])).is_finite()
+                or D(str(ops[key])) < 0
+                or D(str(ops[key])) >= maximum
+            ):
                 failures.append(f"{key} exceeds limit")
     if paper is None:
         absent.append("After-hosting paper economics absent")
     add("G6", failures, absent)
-    add("G7", [], [] if evidence.acknowledgement == "ARM NEW BOUNDED LIVE TRIAL" and evidence.resumed else ["Explicit new-trial acknowledgement and authenticated Resume not observed"])
+    add(
+        "G7",
+        [],
+        []
+        if evidence.acknowledgement == "ARM NEW BOUNDED LIVE TRIAL" and evidence.resumed
+        else ["Explicit new-trial acknowledgement and authenticated Resume not observed"],
+    )
     return GateReport(tuple(gates))
 
 
-def validate_arming_preflight(settings: Settings, allocation: D, snapshot: ExchangeSnapshot, verified: VerifiedSettings | None = None) -> None:
+def validate_arming_preflight(
+    settings: Settings,
+    allocation: D,
+    snapshot: ExchangeSnapshot,
+    verified: VerifiedSettings | None = None,
+) -> None:
     validate_mode(settings)
-    if settings.mode is not Mode.LIVE or not settings.live_trading_enabled or settings.host_profile != "vps":
+    if (
+        settings.mode is not Mode.LIVE
+        or not settings.live_trading_enabled
+        or settings.host_profile != "vps"
+    ):
         raise ValueError("LIVE requires explicit flag and continuously operated VPS")
-    if not allocation.is_finite() or allocation <= 0 or allocation != settings.initial_capital_usdt or abs(snapshot.account.wallet_balance - allocation) > D("0.01"):
+    if (
+        not allocation.is_finite()
+        or allocation <= 0
+        or allocation != settings.initial_capital_usdt
+        or abs(snapshot.account.wallet_balance - allocation) > D("0.01")
+    ):
         raise ValueError("Declared allocation must match the exclusive wallet within 0.01 USDT")
-    if snapshot.positions or any(not o.state.terminal for o in (*snapshot.ordinary_orders, *snapshot.algo_orders)):
+    if snapshot.positions or any(
+        not o.state.terminal for o in (*snapshot.ordinary_orders, *snapshot.algo_orders)
+    ):
         raise ValueError("New trial requires a flat account and no unresolved orders")
     if verified is None:
         raise ValueError("Verified account settings are required")
-    if not verified.one_way or not verified.single_asset or not verified.isolated or verified.auto_margin or verified.bnb_fees or not D("1") <= verified.leverage <= 2:
+    if (
+        not verified.one_way
+        or not verified.single_asset
+        or not verified.isolated
+        or verified.auto_margin
+        or verified.bnb_fees
+        or not D("1") <= verified.leverage <= 2
+    ):
         raise ValueError("Account settings do not satisfy bounded-trial requirements")
 
 
-def arm_trial(evidence: EvidenceBundle, settings: Settings, allocation: D, acknowledgement: str,
-              *, snapshot: ExchangeSnapshot | None = None, verified: VerifiedSettings | None = None, at_ms: int = 0) -> Trial:
+def arm_trial(
+    evidence: EvidenceBundle,
+    settings: Settings,
+    allocation: D,
+    acknowledgement: str,
+    *,
+    snapshot: ExchangeSnapshot | None = None,
+    verified: VerifiedSettings | None = None,
+    at_ms: int = 0,
+) -> Trial:
     gates = evaluate_gates(evidence, settings)
     blocked = [g for g in gates.gates[:6] if g.status is not GateStatus.PASS]
     if blocked:
-        raise ValueError("Arming blocked: " + "; ".join(f"{g.identity}: {g.status.value}" for g in blocked))
+        raise ValueError(
+            "Arming blocked: " + "; ".join(f"{g.identity}: {g.status.value}" for g in blocked)
+        )
     if acknowledgement != "ARM NEW BOUNDED LIVE TRIAL":
         raise ValueError("Exact explicit acknowledgement required")
     if snapshot is None:
@@ -191,10 +307,15 @@ def arm_trial(evidence: EvidenceBundle, settings: Settings, allocation: D, ackno
             if previous:
                 if repo.position() or repo.has_active_slot():
                     raise ValueError("Prior trial must be reconciled flat with cleared capacity")
-                db.connection.execute("UPDATE runs SET active=0,end_ms=? WHERE run_id=?", (at_ms, previous.run_id))
+                db.connection.execute(
+                    "UPDATE runs SET active=0,end_ms=? WHERE run_id=?", (at_ms, previous.run_id)
+                )
             hashes = {**evidence.hashes, "evidence": digest(evidence), "armed": "true"}
             trial = repo.create_run(Mode.LIVE, allocation, hashes, at_ms)
-            db.connection.execute("INSERT INTO audit_events(run_id,at_ms,kind,payload) VALUES(?,?,'ARMED',?)", (trial.run_id, at_ms, encode({"acknowledgement": acknowledgement, "gates": gates})))
+            db.connection.execute(
+                "INSERT INTO audit_events(run_id,at_ms,kind,payload) VALUES(?,?,'ARMED',?)",
+                (trial.run_id, at_ms, encode({"acknowledgement": acknowledgement, "gates": gates})),
+            )
             # Startup remains PAUSED; fresh reconciliation and authenticated Resume are separate.
             return trial
         finally:

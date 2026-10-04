@@ -1,3 +1,4 @@
+import asyncio
 import json
 from dataclasses import dataclass, replace
 from decimal import Decimal as D
@@ -7,8 +8,16 @@ from crypto_bot.config import Settings
 from crypto_bot.domain.clock import Clock
 from crypto_bot.domain.enums import ExitReason, OrderSide, OrderState, PositionPhase, PositionSide
 from crypto_bot.domain.models import (
-    ApprovedSize, EntryContext, OrderIntent, OrderObservation, Position, RiskInput,
-    RiskPolicy, Signal, SubmitAck, SubmitRejected,
+    ApprovedSize,
+    EntryContext,
+    OrderIntent,
+    OrderObservation,
+    Position,
+    RiskInput,
+    RiskPolicy,
+    Signal,
+    SubmitAck,
+    SubmitRejected,
 )
 from crypto_bot.risk.eligibility import check_eligibility
 from crypto_bot.risk.sizing import size_entry
@@ -30,24 +39,35 @@ class ExitResult:
 
 
 class ExecutionCoordinator:
-    def __init__(self, repo: Repository, exchange: Any, clock: Clock,
-                 settings: Settings | None = None) -> None:
+    def __init__(
+        self, repo: Repository, exchange: Any, clock: Clock, settings: Settings | None = None
+    ) -> None:
         self.repo, self.exchange, self.clock = repo, exchange, clock
         self.settings = settings or Settings()
         self.protection: Any = None
+        self.exit_lock = asyncio.Lock()
 
     async def process_signal(self, signal: Signal, context: EntryContext) -> EntryOutcome:
         trial = self.repo.current_trial()
         state = self.repo.state()
-        if trial is None or trial.halt_reason or state.get("state") != "RUNNING" or not state.get("reconciled"):
+        if (
+            trial is None
+            or trial.halt_reason
+            or state.get("state") != "RUNNING"
+            or not state.get("reconciled")
+        ):
             return EntryOutcome("skipped", "ENTRIES_PAUSED")
         if self.repo.has_active_slot():
             return EntryOutcome("skipped", "CAPACITY_OCCUPIED")
         reasons = check_eligibility(signal, context, self.clock.now_ms(), self.settings)
         if reasons:
             return EntryOutcome("skipped", reasons[0])
-        policy = RiskPolicy(self.settings.leverage, self.settings.entry_slippage_reserve,
-                             self.settings.exit_slippage_reserve, self.settings.fee_floor)
+        policy = RiskPolicy(
+            self.settings.leverage,
+            self.settings.entry_slippage_reserve,
+            self.settings.exit_slippage_reserve,
+            self.settings.fee_floor,
+        )
         size = size_entry(RiskInput(trial, signal, context, policy))
         if not isinstance(size, ApprovedSize):
             return EntryOutcome("skipped", size.reason)
@@ -56,6 +76,12 @@ class ExecutionCoordinator:
             return EntryOutcome("skipped", "DUPLICATE_OR_CAPACITY")
         # Commit before transport; a crash can never turn a submitted request into PREPARED.
         self.repo.set_intent_state(intent.logical_id, OrderState.SUBMITTED)
+        from crypto_bot.storage.repository import encode
+
+        self.repo.db.connection.execute(
+            "INSERT INTO audit_events(run_id,at_ms,kind,payload) VALUES(?,?,'ENTRY_SUBMITTED',?)",
+            (intent.run_id, self.clock.now_ms(), encode({"intent_id": intent.logical_id})),
+        )
         try:
             result = await self.exchange.submit_entry(intent)
         except Exception:
@@ -66,31 +92,58 @@ class ExecutionCoordinator:
             return EntryOutcome("skipped", result.reason, intent.logical_id)
         if isinstance(result, SubmitAck):
             self.apply_observation(intent, result.observation)
+            if self.protection and self.repo.position():
+                await self.protection.protect_observed_stop(intent.logical_id)
         else:
             self.repo.set_intent_state(intent.logical_id, OrderState.UNKNOWN)
             self.repo.mark_reconciled(self.clock.now_ms(), False)
-        await self.observe_exposure(intent)
+        try:
+            await self.observe_exposure(intent)
+        except Exception:
+            self.repo.mark_reconciled(self.clock.now_ms(), False)
+            return EntryOutcome("unresolved", "EXPOSURE_READ_UNAVAILABLE", intent.logical_id)
         if self.protection and self.repo.position():
             await self.protection.ensure_protection(intent.logical_id)
-        state = self.repo.intent_state(intent.logical_id)
-        return EntryOutcome("filled" if state is OrderState.FILLED else "unresolved" if state is OrderState.UNKNOWN
-                            else "partially_filled" if self.repo.position() else "pending", intent_id=intent.logical_id)
+        order_state = self.repo.intent_state(intent.logical_id)
+        return EntryOutcome(
+            "filled"
+            if order_state is OrderState.FILLED
+            else "unresolved"
+            if order_state is OrderState.UNKNOWN
+            else "partially_filled"
+            if self.repo.position()
+            else "pending",
+            intent_id=intent.logical_id,
+        )
 
     def apply_observation(self, intent: OrderIntent, observation: OrderObservation) -> None:
         self.repo.record_order(observation)
         current = self.repo.order(intent.client_id)
         assert current is not None
         if current.cumulative_quantity > 0:
-            row = self.repo.db.connection.execute("SELECT evidence FROM order_intents WHERE logical_id=?", (intent.logical_id,)).fetchone()
+            row = self.repo.db.connection.execute(
+                "SELECT evidence FROM order_intents WHERE logical_id=?", (intent.logical_id,)
+            ).fetchone()
             evidence = json.loads(row[0])["evidence"]
             old = self.repo.position()
             side = PositionSide.LONG if intent.side.value == "BUY" else PositionSide.SHORT
-            first = current.first_fill_ms if current.first_fill_ms is not None else self.clock.now_ms()
+            first = (
+                current.first_fill_ms if current.first_fill_ms is not None else self.clock.now_ms()
+            )
             first = min(first, old.first_fill_ms) if old else first
-            position = Position(intent.symbol, side, current.cumulative_quantity, current.average_price,
-                D(evidence.get("atr", "1")), first, old.stop if old else None, old.target if old else None,
-                old.liquidation_price if old else None, old.phase if old else PositionPhase.PROTECTING,
-                intent.logical_id)
+            position = Position(
+                intent.symbol,
+                side,
+                current.cumulative_quantity,
+                current.average_price,
+                D(evidence.get("atr", "1")),
+                first,
+                old.stop if old else None,
+                old.target if old else None,
+                old.liquidation_price if old else None,
+                old.phase if old else PositionPhase.PROTECTING,
+                intent.logical_id,
+            )
             self.repo.save_position(position)
         elif current.state.terminal and self.repo.position() is None:
             self.repo.release_slot()
@@ -107,7 +160,14 @@ class ExecutionCoordinator:
                 self.repo.record_execution(fill)
         position = self.repo.position()
         if position:
-            real = next((p for p in snapshot.positions if p.symbol == position.symbol and p.side is position.side), None)
+            real = next(
+                (
+                    p
+                    for p in snapshot.positions
+                    if p.symbol == position.symbol and p.side is position.side
+                ),
+                None,
+            )
             if real:
                 self.repo.save_position(replace(position, liquidation_price=real.liquidation_price))
 
@@ -122,8 +182,13 @@ class ExecutionCoordinator:
             if self.protection and self.repo.position():
                 await self.protection.ensure_protection(intent.logical_id)
             position = self.repo.position()
+            row = self.repo.db.connection.execute(
+                "SELECT at_ms FROM audit_events WHERE run_id=? AND kind='ENTRY_SUBMITTED' AND json_extract(payload,'$.intent_id')=? ORDER BY id LIMIT 1",
+                (intent.run_id, intent.logical_id),
+            ).fetchone()
+            requested_ms = row[0] if row else self.clock.now_ms()
             if self.repo.has_unresolved_intent(intent.signal_id) and (
-                self.clock.now_ms() - (position.first_fill_ms if position else self.repo.current_trial().start_ms) > 30000
+                self.clock.now_ms() - (position.first_fill_ms if position else requested_ms) > 30000
             ):
                 self.repo.latch_halt(intent.run_id, "UNRESOLVED_ENTRY")
 
@@ -135,7 +200,11 @@ class ExecutionCoordinator:
             state = self.repo.intent_state(intent.logical_id)
             if state.terminal:
                 continue
-            if intent.role == "ENTRY" and state in {OrderState.PREPARED, OrderState.UNKNOWN, OrderState.SUBMITTED}:
+            if intent.role == "ENTRY" and state in {
+                OrderState.PREPARED,
+                OrderState.UNKNOWN,
+                OrderState.SUBMITTED,
+            }:
                 observed = await self.exchange.find_order(intent)
                 if observed is None or not observed.state.terminal:
                     return False
@@ -153,9 +222,20 @@ class ExecutionCoordinator:
         return True
 
     async def request_exit(self, reason: ExitReason) -> ExitResult:
+        # Latch loss permission immediately, even while another exit owns transport.
+        if reason is ExitReason.TRIAL_LOSS:
+            self.repo.latch_halt(self.repo.current_run_id(), reason.value)
+        async with self.exit_lock:
+            return await self._request_exit(reason)
+
+    async def _request_exit(self, reason: ExitReason) -> ExitResult:
         trial = self.repo.current_trial()
         assert trial is not None
-        if reason in {ExitReason.TRIAL_LOSS, ExitReason.PROTECTION_FAILURE, ExitReason.RECOVERY_FAULT}:
+        if reason in {
+            ExitReason.TRIAL_LOSS,
+            ExitReason.PROTECTION_FAILURE,
+            ExitReason.RECOVERY_FAULT,
+        }:
             self.repo.latch_halt(trial.run_id, reason.value)
         elif reason in {ExitReason.OPERATOR, ExitReason.FUNDING_RISK}:
             self.repo.pause()
@@ -172,10 +252,25 @@ class ExecutionCoordinator:
         if owned is None:
             complete = await self.cleanup_flat() if not snapshot.positions else False
             return ExitResult(not snapshot.positions, complete)
-        real = next((p for p in snapshot.positions if p.symbol == owned.symbol and p.side is owned.side), None)
+        real = next(
+            (p for p in snapshot.positions if p.symbol == owned.symbol and p.side is owned.side),
+            None,
+        )
         if real is not None:
-            self.repo.save_position(replace(owned, quantity=real.quantity, phase=PositionPhase.EXIT_PENDING))
-            existing = next((i for i in self.repo.intents() if i.signal_id == self.repo.intents()[0].signal_id and i.role == "EXIT" and not self.repo.intent_state(i.logical_id).terminal), None)
+            self.repo.save_position(
+                replace(owned, quantity=real.quantity, phase=PositionPhase.EXIT_PENDING)
+            )
+            entries = next(i for i in self.repo.intents() if i.logical_id == owned.intent_id)
+            existing = next(
+                (
+                    i
+                    for i in self.repo.intents()
+                    if i.signal_id == entries.signal_id
+                    and i.role == "EXIT"
+                    and not self.repo.intent_state(i.logical_id).terminal
+                ),
+                None,
+            )
             if existing is not None:
                 observed = await self.exchange.find_order(existing)
                 if observed is not None:
@@ -183,22 +278,100 @@ class ExecutionCoordinator:
                 if observed is None or not observed.state.terminal:
                     return ExitResult(False, False, "EXIT_OUTCOME_UNKNOWN")
             else:
-                entries = next(i for i in self.repo.intents() if i.logical_id == owned.intent_id)
-                generation = sum(i.role == "EXIT" and i.signal_id == entries.signal_id for i in self.repo.intents())
-                exit_intent = make_intent(trial.run_id, entries.signal_id, "EXIT", generation, owned.symbol,
-                                          OrderSide.SELL if owned.side is PositionSide.LONG else OrderSide.BUY,
-                                          real.quantity)
+                generation = sum(
+                    i.role == "EXIT" and i.signal_id == entries.signal_id
+                    for i in self.repo.intents()
+                )
+                exit_intent = make_intent(
+                    trial.run_id,
+                    entries.signal_id,
+                    "EXIT",
+                    generation,
+                    owned.symbol,
+                    OrderSide.SELL if owned.side is PositionSide.LONG else OrderSide.BUY,
+                    real.quantity,
+                )
                 self.repo.add_intent(exit_intent, {"reason": reason.value})
                 self.repo.set_intent_state(exit_intent.logical_id, OrderState.SUBMITTED)
-                result = await self.exchange.reduce_position(owned.symbol, owned.side, real.quantity, exit_intent.client_id)
+                result = await self.exchange.reduce_position(
+                    owned.symbol, owned.side, real.quantity, exit_intent.client_id
+                )
                 if isinstance(result, SubmitAck):
                     self.repo.record_order(result.observation)
                 else:
                     self.repo.set_intent_state(exit_intent.logical_id, OrderState.UNKNOWN)
             snapshot = await self.exchange.fetch_snapshot()
-        flat = not any(p.symbol == owned.symbol and p.side is owned.side for p in snapshot.positions)
+        flat = not any(
+            p.symbol == owned.symbol and p.side is owned.side for p in snapshot.positions
+        )
         if not flat:
             return ExitResult(False, False, "EXPOSURE_REMAINS")
+        self.finalize_trade(owned, snapshot, reason.value)
         self.repo.save_position(None)
         complete = await self.cleanup_flat()
         return ExitResult(True, complete, None if complete else "RESIDUAL_ORDERS_UNRESOLVED")
+
+    def finalize_trade(self, position: Position, snapshot: Any, reason: str) -> None:
+        from crypto_bot.research.simulation import ClosedTrade
+        from crypto_bot.storage.repository import encode
+
+        entries = next((i for i in self.repo.intents() if i.logical_id == position.intent_id), None)
+        if entries is None:
+            return
+        if self.repo.db.connection.execute(
+            "SELECT 1 FROM audit_events WHERE run_id=? AND kind='CLOSED_TRADE' AND json_extract(payload,'$.position.intent_id')=?",
+            (entries.run_id, position.intent_id),
+        ).fetchone():
+            return
+        roles: dict[str, str] = {}
+        for intent in self.repo.intents():
+            if intent.signal_id == entries.signal_id:
+                order = self.repo.order(intent.client_id)
+                roles[intent.client_id] = intent.role
+                if order:
+                    roles[order.venue_id] = intent.role
+                    if order.actual_order_id:
+                        roles[order.actual_order_id] = intent.role
+        for fill in snapshot.fills:
+            if fill.order_id in roles:
+                self.repo.record_execution(fill)
+        for income in snapshot.income:
+            self.repo.record_execution(income)
+        ins = [f for f in self.repo.fills() if roles.get(f.order_id) == "ENTRY"]
+        outs = [
+            f
+            for f in self.repo.fills()
+            if roles.get(f.order_id) in {"EXIT", "STOP", "TARGET", "PROVISIONAL_STOP"}
+        ]
+        qty = sum((f.quantity for f in ins), D("0"))
+        if qty <= 0 or sum((f.quantity for f in outs), D("0")) != qty:
+            return  # Incomplete venue history never manufactures a closed trade.
+        entry = sum((f.price * f.quantity for f in ins), D("0")) / qty
+        exit_price = sum((f.price * f.quantity for f in outs), D("0")) / qty
+        first, last = min(f.at_ms for f in ins), max(f.at_ms for f in outs)
+        gross = (exit_price - entry) * qty * (1 if position.side is PositionSide.LONG else -1)
+        fees = sum((f.commission for f in (*ins, *outs)), D("0"))
+        funding = sum(
+            (
+                i.amount
+                for i in self.repo.income_events()
+                if i.income_type == "FUNDING_FEE"
+                and i.symbol == position.symbol
+                and first <= i.at_ms <= last
+            ),
+            D("0"),
+        )
+        trade = ClosedTrade(
+            replace(position, quantity=qty, average_entry=entry, first_fill_ms=first),
+            last,
+            exit_price,
+            gross,
+            fees,
+            funding,
+            gross - fees + funding,
+            reason,
+        )
+        self.repo.db.connection.execute(
+            "INSERT INTO audit_events(run_id,at_ms,kind,payload) VALUES(?,?,'CLOSED_TRADE',?)",
+            (entries.run_id, last, encode(trade)),
+        )

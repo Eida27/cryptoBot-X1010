@@ -265,7 +265,10 @@ class Repository:
     def intents(self) -> tuple[OrderIntent, ...]:
         return tuple(
             decode_intent(r[0])
-            for r in self.db.connection.execute("SELECT payload FROM order_intents WHERE run_id=? ORDER BY rowid", (self.current_run_id(),))
+            for r in self.db.connection.execute(
+                "SELECT payload FROM order_intents WHERE run_id=? ORDER BY rowid",
+                (self.current_run_id(),),
+            )
         )
 
     def intent_state(self, identity: str) -> OrderState:
@@ -343,7 +346,10 @@ class Repository:
 
     def income_events(self, run_id: str | None = None) -> tuple[IncomeEvent, ...]:
         events = []
-        for row in self.db.connection.execute("SELECT payload FROM income_events WHERE run_id=? ORDER BY at_ms", (run_id or self.current_run_id(),)):
+        for row in self.db.connection.execute(
+            "SELECT payload FROM income_events WHERE run_id=? ORDER BY at_ms",
+            (run_id or self.current_run_id(),),
+        ):
             value = json.loads(row[0])
             value["amount"] = D(value["amount"])
             events.append(IncomeEvent(**value))
@@ -351,7 +357,10 @@ class Repository:
 
     def fills(self, run_id: str | None = None) -> tuple[FillEvent, ...]:
         events = []
-        for row in self.db.connection.execute("SELECT payload FROM fills WHERE run_id=? ORDER BY at_ms", (run_id or self.current_run_id(),)):
+        for row in self.db.connection.execute(
+            "SELECT payload FROM fills WHERE run_id=? ORDER BY at_ms",
+            (run_id or self.current_run_id(),),
+        ):
             value = json.loads(row[0])
             for key in ("price", "quantity", "commission"):
                 value[key] = D(value[key])
@@ -433,7 +442,8 @@ class Repository:
         return tuple(
             ControlCommand(r["request_id"], r["action"], r["operator"], r["at_ms"])
             for r in self.db.connection.execute(
-                "SELECT * FROM control_commands WHERE state='PENDING' AND run_id=? ORDER BY at_ms,rowid", (self.current_run_id(),)
+                "SELECT * FROM control_commands WHERE state='PENDING' AND run_id=? ORDER BY at_ms,rowid",
+                (self.current_run_id(),),
             )
         )
 

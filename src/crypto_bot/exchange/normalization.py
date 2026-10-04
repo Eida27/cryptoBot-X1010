@@ -120,6 +120,9 @@ def normalize_order(
         decimal_value(value.get("avgPrice", value.get("actualPrice", "0"))),
         int(value["firstFillTime"]) if value.get("firstFillTime") else None,
         at_ms,
+        str(value["actualOrderId"])
+        if value.get("actualOrderId") not in (None, "", 0, "0")
+        else None,
     )
 
 
@@ -172,7 +175,7 @@ def normalize_snapshot(payloads: Mapping[str, Any]) -> ExchangeSnapshot:
     )
     return ExchangeSnapshot(
         at_ms,
-        normalize_account(payloads["account"], at_ms),
+        normalize_account(payloads["account"], int(payloads.get("account_observed_ms", at_ms))),
         tuple(positions),
         tuple(normalize_order(v, at_ms) for v in payloads.get("orders", [])),
         tuple(normalize_order(v, at_ms, "algo") for v in payloads.get("algo_orders", [])),

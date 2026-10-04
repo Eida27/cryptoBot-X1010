@@ -68,18 +68,18 @@ class MarketService:
         )
         verified = VerifiedSettings(leverage=adapter.settings.leverage)
         fee = D("0.0006")
+        if not adapter.private and adapter.settings.bracket_metadata:
+            fee = max(fee, D(adapter.public_brackets()["fees"][signal.symbol]))
         if adapter.private:
             position_mode = await adapter.read("position_mode")
             asset_mode = await adapter.read("asset_mode")
             burn = await adapter.read("fee_burn")
-            account = await adapter.read("account")
-            position = next(v for v in account["positions"] if v["symbol"] == signal.symbol)
-            positions = await adapter.read("positions", symbol=signal.symbol)
-            raw = positions[0]
+            symbol_settings = await adapter.read("symbol_config", symbol=signal.symbol)
+            raw = next(v for v in symbol_settings if v["symbol"] == signal.symbol)
             verified = VerifiedSettings(
                 not position_mode["dualSidePosition"],
                 not asset_mode["multiAssetsMargin"],
-                bool(position.get("isolated")),
+                str(raw["marginType"]).upper() == "ISOLATED",
                 str(raw.get("isAutoAddMargin", "true")).lower() != "false",
                 bool(burn["feeBurn"]),
                 D(str(raw["leverage"])),

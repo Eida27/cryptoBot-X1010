@@ -40,3 +40,8 @@ no response model and zero retries. This retains official signing and raw decima
 strings; it does not patch dependencies. Demo execution evidence remains required.
 Also, the SDK TESTNET constant points to the older testnet host; DEMO explicitly
 selects the official demo URL instead of that constant.
+# Stream/account compatibility, verified 2026-10-05
+
+The SDK's raw stream subscriptions route depth to `/public` and mark/kline to `/market`; combined private envelopes are unwrapped before normalization. The generic SDK `on` method accepts only `message`; connection failure is detected through bounded silence/schema/backlog checks. A real public connection received both `depthUpdate` and `markPriceUpdate` with zero mutations. This is public-stream evidence only, not G4.
+
+The flat v3 account/position payloads do not supply per-symbol configuration. Verify isolation, auto margin and leverage through `GET /fapi/v1/symbolConfig`, plus position mode, asset mode and fee burn endpoints. [Binance change log](https://developers.binance.com/zh-CN/docs/products/derivatives-trading-coin-futures/change-log) documents the v3 configuration split; [WebSocket upgrade notice](https://www.binance.com/en-NG/support/announcement/detail/ebf9b0aa9eca4ff3804eef6fb09ba32a) documents stream categories. Public-stream routing also matches the [official stream reference](https://github.com/binance/binance-skills-hub/blob/main/skills/binance/binance/references/futures-usds-streams.md).

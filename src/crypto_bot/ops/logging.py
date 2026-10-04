@@ -18,7 +18,12 @@ class DailyBoundedHandler(logging.Handler):
             if self.writer:
                 self.writer.close()
             self.date = date
-            self.writer = RotatingFileHandler(self.directory / f"bot-{date}.log", maxBytes=5 * 1048576, backupCount=3, encoding="utf-8")
+            self.writer = RotatingFileHandler(
+                self.directory / f"bot-{date}.log",
+                maxBytes=5 * 1048576,
+                backupCount=3,
+                encoding="utf-8",
+            )
             self.writer.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
             cutoff = datetime.now(UTC).date() - timedelta(days=14)
             for path in self.directory.glob("bot-????-??-??.log*"):

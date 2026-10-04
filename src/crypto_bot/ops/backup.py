@@ -61,7 +61,16 @@ def create_backup(database: Path, destination: Path) -> BackupManifest:
     os.replace(temporary, target)
     target.chmod(0o600)
     manifest = BackupManifest(target.resolve(), file_hash(target), int(now.timestamp() * 1000))
-    target.with_suffix(".json").write_text(json.dumps({"path": str(manifest.path), "checksum": manifest.checksum, "created_ms": manifest.created_ms}), encoding="utf-8")
+    target.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "path": str(manifest.path),
+                "checksum": manifest.checksum,
+                "created_ms": manifest.created_ms,
+            }
+        ),
+        encoding="utf-8",
+    )
     retained = sorted(destination.glob(f"{database.stem}-????-??-??.sqlite3"), reverse=True)
     for old in retained[7:]:
         if old.is_file() and not old.is_symlink():
@@ -84,8 +93,12 @@ def verify_restore(manifest: BackupManifest, destination: Path) -> RestoreReport
             if source.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError("Backup integrity check failed")
             source.backup(target)
-            target.execute("UPDATE run_state SET reconciled=0,state=CASE WHEN halt_reason IS NULL THEN 'PAUSED' ELSE 'HALTED' END")
-            target.execute("UPDATE runs SET qualification_status='INTERRUPTED' WHERE active=1 AND mode='PAPER'")
+            target.execute(
+                "UPDATE run_state SET reconciled=0,state=CASE WHEN halt_reason IS NULL THEN 'PAUSED' ELSE 'HALTED' END"
+            )
+            target.execute(
+                "UPDATE runs SET qualification_status='INTERRUPTED' WHERE active=1 AND mode='PAPER'"
+            )
             target.execute("UPDATE web_sessions SET revoked=1")
             target.commit()
             integrity = target.execute("PRAGMA integrity_check").fetchone()[0]

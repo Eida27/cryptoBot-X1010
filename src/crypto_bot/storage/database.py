@@ -52,6 +52,8 @@ class ProcessLock:
         self.handle: BinaryIO | None = None
 
     def __enter__(self) -> "ProcessLock":
+        if self.handle is not None:
+            return self
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = self.path.open("a+b")
         try:

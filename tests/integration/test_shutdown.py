@@ -44,6 +44,7 @@ async def test_time_exit_uses_original_first_fill_after_restart(repo, clock):
     engine, exchange = await setup(repo, clock)
     first = repo.position().first_fill_ms
     from crypto_bot.execution.coordinator import ExecutionCoordinator
+
     restarted = ExecutionCoordinator(repo, exchange, clock)
     protect(restarted)
     clock.at_ms = first + 48 * 3600000

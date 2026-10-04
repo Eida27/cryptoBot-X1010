@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     database: Path = Path("state/paper.sqlite3")
     host_profile: str = "local"
     container_runtime: bool = False
+    bracket_metadata: Path | None = None
+    evidence_path: Path = Path("state/evidence.json")
+    hosting_monthly_usd: Decimal = Decimal("0")
+    usdt_per_usd: Decimal = Decimal("1")
     initial_capital_usdt: Decimal = Decimal("16.00")
     allocation_reference: str = "Virtual estimate for PHP 1,000; not a current FX quote"
     live_trading_enabled: bool = False
@@ -85,6 +89,10 @@ class Settings(BaseSettings):
             "port",
             "bind_host",
             "secure_cookies",
+            "rest_url",
+            "evidence_path",
+            "hosting_monthly_usd",
+            "usdt_per_usd",
         ):
             values.pop(field, None)
         return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
@@ -117,6 +125,8 @@ def validate_mode(settings: Settings) -> None:
         errors.append("Cost allowances cannot be negative")
     if settings.fee_floor < Decimal("0.0006"):
         errors.append("Fee floor cannot be lowered")
+    if settings.hosting_monthly_usd < 0 or settings.usdt_per_usd <= 0:
+        errors.append("Invalid operating cost/conversion assumption")
     if errors:
         raise ConfigurationError("; ".join(errors))
 

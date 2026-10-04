@@ -4,9 +4,8 @@ import hashlib
 import heapq
 import io
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from decimal import Decimal as D
 from itertools import groupby
 from pathlib import Path
@@ -18,7 +17,7 @@ from crypto_bot.domain.models import Candle, CandleEvent, FundingEvent, MarketEv
 from crypto_bot.exchange.binance_adapter import BinanceAdapter
 from crypto_bot.exchange.normalization import normalize_candle
 from crypto_bot.market.validation import validate_candle
-from crypto_bot.storage.repository import digest, encode, plain
+from crypto_bot.storage.repository import digest, plain
 
 
 @dataclass(frozen=True)
@@ -66,7 +65,11 @@ def checked_rows(rows: Iterable[Candle], symbol: str, interval_ms: int) -> Itera
     previous = None
     for candle in rows:
         validate_candle(candle)
-        if candle.symbol != symbol or not candle.closed or candle.close_ms - candle.open_ms != interval_ms:
+        if (
+            candle.symbol != symbol
+            or not candle.closed
+            or candle.close_ms - candle.open_ms != interval_ms
+        ):
             raise ValueError(f"{symbol}:{candle.open_ms}: INVALID_INTERVAL")
         if previous is not None and candle.open_ms < previous.close_ms:
             raise ValueError(f"{symbol}:{candle.open_ms}: DUPLICATE_OR_REORDERED")
@@ -85,13 +88,18 @@ def checksum(path: Path) -> str:
         return hashlib.file_digest(file, "sha256").hexdigest()
 
 
-def write_daily(rows: Iterable[Candle], symbol: str, role: str, destination: Path,
-                request: DatasetRequest) -> list[DataFile]:
+def write_daily(
+    rows: Iterable[Candle], symbol: str, role: str, destination: Path, request: DatasetRequest
+) -> list[DataFile]:
     files = []
     first, end = None, None
     for day, values in groupby(checked_rows(rows, symbol, 60000), lambda c: c.open_ms // 86400000):
         path = destination / f"{symbol}-{role}-{day}.csv.gz"
-        with path.open("wb") as binary, gzip.GzipFile(filename="", fileobj=binary, mode="wb", mtime=0) as compressed, io.TextIOWrapper(compressed, newline="") as text:
+        with (
+            path.open("wb") as binary,
+            gzip.GzipFile(filename="", fileobj=binary, mode="wb", mtime=0) as compressed,
+            io.TextIOWrapper(compressed, newline="") as text,
+        ):
             writer = csv.writer(text, lineterminator="\n")
             day_first, day_end = None, None
             for candle in values:
@@ -99,8 +107,18 @@ def write_daily(rows: Iterable[Candle], symbol: str, role: str, destination: Pat
                     first = candle.open_ms
                 day_first = candle.open_ms if day_first is None else day_first
                 day_end = end = candle.close_ms
-                writer.writerow([candle.open_ms, candle.close_ms, candle.open, candle.high,
-                                 candle.low, candle.close, candle.volume, candle.quote_volume])
+                writer.writerow(
+                    [
+                        candle.open_ms,
+                        candle.close_ms,
+                        candle.open,
+                        candle.high,
+                        candle.low,
+                        candle.close,
+                        candle.volume,
+                        candle.quote_volume,
+                    ]
+                )
         assert day_first is not None and day_end is not None
         files.append(DataFile(path, symbol, role, checksum(path), day_first, day_end))
     if first != request.first_ms or end != request.end_ms:
@@ -108,9 +126,14 @@ def write_daily(rows: Iterable[Candle], symbol: str, role: str, destination: Pat
     return files
 
 
-def write_dataset(request: DatasetRequest, destination: Path,
-                  trades: dict[str, Iterable[Candle]], marks: dict[str, Iterable[Candle]],
-                  funding: dict[str, Iterable[FundingEvent]], filters: dict[str, Any]) -> DatasetManifest:
+def write_dataset(
+    request: DatasetRequest,
+    destination: Path,
+    trades: dict[str, Iterable[Candle]],
+    marks: dict[str, Iterable[Candle]],
+    funding: Mapping[str, Iterable[FundingEvent]],
+    filters: dict[str, Any],
+) -> DatasetManifest:
     if request.start_ms >= request.end_ms or request.warmup < 0:
         raise ValueError("Invalid dataset range")
     destination.mkdir(parents=True, exist_ok=True)
@@ -130,27 +153,67 @@ def write_dataset(request: DatasetRequest, destination: Path,
         for event in events:
             if not event.rate.is_finite() or not event.mark.is_finite() or event.mark <= 0:
                 raise ValueError(f"{symbol}:{event.at_ms}: INVALID_FUNDING")
+        validate_funding_coverage(events, request, symbol)
         path = destination / f"{symbol}-funding.csv.gz"
-        with path.open("wb") as binary, gzip.GzipFile(filename="", fileobj=binary, mode="wb", mtime=0) as compressed, io.TextIOWrapper(compressed, newline="") as text:
+        with (
+            path.open("wb") as binary,
+            gzip.GzipFile(filename="", fileobj=binary, mode="wb", mtime=0) as compressed,
+            io.TextIOWrapper(compressed, newline="") as text,
+        ):
             writer = csv.writer(text, lineterminator="\n")
             for event in events:
                 writer.writerow([event.at_ms, event.rate, event.mark, event.transaction_id])
-        files.append(DataFile(path, symbol, "funding", checksum(path), request.first_ms, request.end_ms))
+        files.append(
+            DataFile(path, symbol, "funding", checksum(path), request.first_ms, request.end_ms)
+        )
     duration = request.end_ms - request.start_ms
-    split = (request.start_ms, request.start_ms + (duration * 60 // 100 // 60000) * 60000,
-             request.start_ms + (duration * 80 // 100 // 60000) * 60000, request.end_ms)
+    split = (
+        request.start_ms,
+        request.start_ms + (duration * 60 // 100 // 60000) * 60000,
+        request.start_ms + (duration * 80 // 100 // 60000) * 60000,
+        request.end_ms,
+    )
     # Tiny fixtures must still contain three nonoverlapping chronological partitions.
     if duration >= 180000:
-        split = (split[0], max(split[0] + 60000, split[1]), max(split[1] + 60000, split[2]), split[3])
-    content_hash = digest({"files": [(f.symbol, f.role, f.checksum) for f in files],
-                           "request": request, "filters": filters, "split": split})
-    manifest = DatasetManifest(destination.resolve(), request, tuple(files), content_hash, split,
-                               SystemClock().now_ms(), filters)
-    (destination / "manifest.json").write_text(json.dumps({
-        "request": plain(request), "files": [{**plain(f), "path": f.path.name} for f in files],
-        "content_hash": content_hash, "split_boundaries": split, "retrieved_ms": manifest.retrieved_ms,
-        "filters": filters, "source": manifest.source, "filter_assumption": manifest.filter_assumption,
-    }, indent=2), encoding="utf-8")
+        split = (
+            split[0],
+            max(split[0] + 60000, split[1]),
+            max(split[1] + 60000, split[2]),
+            split[3],
+        )
+    content_hash = digest(
+        {
+            "files": [(f.symbol, f.role, f.checksum) for f in files],
+            "request": request,
+            "filters": filters,
+            "split": split,
+        }
+    )
+    manifest = DatasetManifest(
+        destination.resolve(),
+        request,
+        tuple(files),
+        content_hash,
+        split,
+        SystemClock().now_ms(),
+        filters,
+    )
+    (destination / "manifest.json").write_text(
+        json.dumps(
+            {
+                "request": plain(request),
+                "files": [{**plain(f), "path": f.path.name} for f in files],
+                "content_hash": content_hash,
+                "split_boundaries": split,
+                "retrieved_ms": manifest.retrieved_ms,
+                "filters": filters,
+                "source": manifest.source,
+                "filter_assumption": manifest.filter_assumption,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return manifest
 
 
@@ -158,16 +221,36 @@ def load_manifest(path: Path) -> DatasetManifest:
     manifest_path = path / "manifest.json" if path.is_dir() else path
     value = json.loads(manifest_path.read_text(encoding="utf-8"))
     root = manifest_path.parent.resolve()
-    request = DatasetRequest(tuple(value["request"]["symbols"]), value["request"]["start_ms"],
-                             value["request"]["end_ms"], value["request"]["warmup"])
+    request = DatasetRequest(
+        tuple(value["request"]["symbols"]),
+        value["request"]["start_ms"],
+        value["request"]["end_ms"],
+        value["request"]["warmup"],
+    )
     files = []
     for file in value["files"]:
         target = (root / file["path"]).resolve()
         if target.parent != root:
             raise ValueError("Dataset path escapes manifest directory")
-        files.append(DataFile(target, file["symbol"], file["role"], file["checksum"], file["first_ms"], file["end_ms"]))
-    return DatasetManifest(root, request, tuple(files), value["content_hash"], tuple(value["split_boundaries"]),
-                           value["retrieved_ms"], value["filters"])
+        files.append(
+            DataFile(
+                target,
+                file["symbol"],
+                file["role"],
+                file["checksum"],
+                file["first_ms"],
+                file["end_ms"],
+            )
+        )
+    return DatasetManifest(
+        root,
+        request,
+        tuple(files),
+        value["content_hash"],
+        tuple(value["split_boundaries"]),
+        value["retrieved_ms"],
+        value["filters"],
+    )
 
 
 def iter_candles(manifest: DatasetManifest, symbol: str, role: str) -> Iterator[Candle]:
@@ -176,8 +259,17 @@ def iter_candles(manifest: DatasetManifest, symbol: str, role: str) -> Iterator[
             continue
         with gzip.open(file.path, "rt", newline="") as source:
             for row in csv.reader(source):
-                yield Candle(symbol, int(row[0]), int(row[1]), D(row[2]), D(row[3]), D(row[4]),
-                             D(row[5]), D(row[6]), D(row[7]))
+                yield Candle(
+                    symbol,
+                    int(row[0]),
+                    int(row[1]),
+                    D(row[2]),
+                    D(row[3]),
+                    D(row[4]),
+                    D(row[5]),
+                    D(row[6]),
+                    D(row[7]),
+                )
 
 
 def iter_funding(manifest: DatasetManifest, symbol: str) -> Iterator[FundingEvent]:
@@ -190,6 +282,16 @@ def iter_funding(manifest: DatasetManifest, symbol: str) -> Iterator[FundingEven
 
 def validate_dataset(manifest: DatasetManifest) -> DataQualityReport:
     issues = []
+    actual_hash = digest(
+        {
+            "files": [(f.symbol, f.role, f.checksum) for f in manifest.files],
+            "request": manifest.request,
+            "filters": manifest.filters,
+            "split": manifest.split_boundaries,
+        }
+    )
+    if actual_hash != manifest.content_hash:
+        issues.append("MANIFEST_HASH_MISMATCH")
     for file in manifest.files:
         if not file.path.exists() or checksum(file.path) != file.checksum:
             issues.append(f"{file.symbol}:{file.first_ms}: CHECKSUM_MISMATCH")
@@ -197,29 +299,59 @@ def validate_dataset(manifest: DatasetManifest) -> DataQualityReport:
         try:
             for symbol in manifest.request.symbols:
                 for role in ("trade", "mark"):
-                    validate_rows(iter_candles(manifest, symbol, role), symbol, 60000)
-                if not list(iter_funding(manifest, symbol)):
-                    issues.append(f"{symbol}: MISSING_ACTUAL_FUNDING")
+                    count = validate_rows(iter_candles(manifest, symbol, role), symbol, 60000)
+                    if count != (manifest.request.end_ms - manifest.request.first_ms) // 60000:
+                        issues.append(f"{symbol}: INCOMPLETE_BOUNDARIES")
+                validate_funding_coverage(
+                    list(iter_funding(manifest, symbol)), manifest.request, symbol
+                )
         except (ValueError, OSError) as exc:
             issues.append(str(exc))
     return DataQualityReport(not issues, tuple(issues))
 
 
+def validate_funding_coverage(
+    events: list[FundingEvent], request: DatasetRequest, symbol: str
+) -> None:
+    if not events:
+        raise ValueError(f"{symbol}: MISSING_ACTUAL_FUNDING")
+    intervals = [b.at_ms - a.at_ms for a, b in zip(events, events[1:])]
+    if any(v <= 0 or v > 8 * 3600000 for v in intervals):
+        raise ValueError(f"{symbol}: FUNDING_GAP_OR_INVALID_INTERVAL")
+    if len(set(intervals)) > 1:
+        # Without historical interval-change evidence a variable schedule is ambiguous.
+        raise ValueError(f"{symbol}: FUNDING_SCHEDULE_CHANGE_REQUIRES_VERIFICATION")
+    interval = intervals[0] if intervals else 8 * 3600000
+    if (
+        events[0].at_ms - request.first_ms > interval
+        or request.end_ms - events[-1].at_ms > interval
+    ):
+        raise ValueError(f"{symbol}: FUNDING_BOUNDARY_GAP")
+    if any(
+        e.symbol != symbol or not e.rate.is_finite() or not e.mark.is_finite() or e.mark <= 0
+        for e in events
+    ):
+        raise ValueError(f"{symbol}: INVALID_FUNDING")
+
+
 def iter_events(manifest: DatasetManifest) -> Iterator[MarketEvent]:
     streams: list[Iterator[Any]] = []
     for symbol in manifest.request.symbols:
-        streams.append((CandleEvent(c) for c in iter_candles(manifest, symbol, "trade")))
+        streams.append(CandleEvent(c) for c in iter_candles(manifest, symbol, "trade"))
         streams.append(iter_funding(manifest, symbol))
+
     def sort_key(event: MarketEvent) -> tuple[int, int]:
         if isinstance(event, FundingEvent):
             return event.at_ms, 0
         assert isinstance(event, CandleEvent)
         return event.candle.open_ms, 1
+
     yield from heapq.merge(*streams, key=sort_key)
 
 
-async def download_dataset(request: DatasetRequest, destination: Path,
-                           adapter: BinanceAdapter | None = None) -> DatasetManifest:
+async def download_dataset(
+    request: DatasetRequest, destination: Path, adapter: BinanceAdapter | None = None
+) -> DatasetManifest:
     public = adapter or BinanceAdapter(Settings(mode="BACKTEST"))
     clock = await public.read("check_server_time")
     if request.end_ms > int(clock["serverTime"]):
@@ -240,8 +372,14 @@ async def download_dataset(request: DatasetRequest, destination: Path,
                 writer = csv.writer(output)
                 cursor = request.first_ms
                 while cursor < request.end_ms:
-                    rows = await public.read(method, symbol=symbol, interval="1m", startTime=cursor,
-                                             endTime=request.end_ms - 1, limit=1000)
+                    rows = await public.read(
+                        method,
+                        symbol=symbol,
+                        interval="1m",
+                        startTime=cursor,
+                        endTime=request.end_ms - 1,
+                        limit=1000,
+                    )
                     if not rows:
                         raise ValueError(f"{symbol}:{cursor}: MISSING_PUBLIC_HISTORY")
                     for row in rows:
@@ -253,20 +391,35 @@ async def download_dataset(request: DatasetRequest, destination: Path,
                     if next_cursor <= cursor:
                         raise ValueError("Nonadvancing historical download")
                     cursor = next_cursor
+
             def read_stage(target: Path = path, name: str = symbol) -> Iterator[Candle]:
                 with gzip.open(target, "rt", newline="") as source:
                     for row in csv.reader(source):
                         yield normalize_candle(name, row, int(clock["serverTime"]))
+
             (trades if role == "trade" else marks)[symbol] = read_stage()
-        events = []
+        events: list[FundingEvent] = []
         cursor = request.first_ms
         while cursor < request.end_ms:
-            rows = await public.read("funding_history", symbol=symbol, startTime=cursor,
-                                     endTime=request.end_ms - 1, limit=1000)
+            rows = await public.read(
+                "funding_history",
+                symbol=symbol,
+                startTime=cursor,
+                endTime=request.end_ms - 1,
+                limit=1000,
+            )
             if not rows:
                 break
-            events.extend(FundingEvent(symbol, int(v["fundingTime"]), D(v["fundingRate"]),
-                                       D(v["markPrice"]), f"{symbol}:{v['fundingTime']}") for v in rows)
+            events.extend(
+                FundingEvent(
+                    symbol,
+                    int(v["fundingTime"]),
+                    D(v["fundingRate"]),
+                    D(v["markPrice"]),
+                    f"{symbol}:{v['fundingTime']}",
+                )
+                for v in rows
+            )
             cursor = int(rows[-1]["fundingTime"]) + 1
         funding[symbol] = events
     return write_dataset(request, destination, trades, marks, funding, filters)
