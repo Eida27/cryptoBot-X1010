@@ -1,0 +1,4 @@
+mode = "DEMO"
+database = "state/demo.sqlite3"
+initial_capital_usdt = "16.00"
+allocation_reference = "Declared demo allocation; not small-balance evidence"

@@ -1,0 +1,6 @@
+mode = "LIVE"
+database = "state/live.sqlite3"
+host_profile = "vps"
+initial_capital_usdt = "16.00"
+allocation_reference = "REPLACE with actual net PHP 1,000 allocation before evidence and arming"
+live_trading_enabled = false

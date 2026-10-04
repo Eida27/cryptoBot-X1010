@@ -1,0 +1,3 @@
+mode = "BACKTEST"
+database = "state/backtest.sqlite3"
+initial_capital_usdt = "16.00"

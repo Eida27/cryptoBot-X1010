@@ -1,0 +1,7 @@
+mode = "PAPER"
+database = "state/paper.sqlite3"
+initial_capital_usdt = "16.00"
+allocation_reference = "Virtual estimate for PHP 1,000; not a current FX quote"
+leverage = "2"
+entries_enabled = false
+live_trading_enabled = false
