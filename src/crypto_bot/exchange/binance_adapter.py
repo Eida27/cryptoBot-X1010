@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal as D
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -10,6 +11,7 @@ from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futur
 
 from crypto_bot.config import ConfigurationError, Settings, validate_mode
 from crypto_bot.domain.clock import Clock, SystemClock
+from crypto_bot.domain.enums import PositionSide
 from crypto_bot.domain.models import ExchangeSnapshot, SymbolRules, OrderIntent, SubmitResult, SubmitAck, SubmitUnknown, SubmitRejected, OrderObservation
 from crypto_bot.exchange.normalization import normalize_rules, normalize_snapshot, normalize_order
 
@@ -104,6 +106,7 @@ class BinanceAdapter:
         self.transport = transport or SDKTransport(settings, private)
         self.heartbeat_ms = 0
         self.account_id = "configured-wallet"
+        self.live_armed = False
 
     async def read(self, method: str, **params: Any) -> Any:
         if method in READ_ENDPOINTS and READ_ENDPOINTS[method][1] and not self.private:
@@ -171,7 +174,7 @@ class BinanceAdapter:
     async def mutate(self, method: str, endpoint: str, params: dict[str, Any]) -> SubmitResult:
         if not self.private:
             raise ConfigurationError("Public adapter cannot mutate orders")
-        if self.settings.mode.value == "LIVE" and not self.settings.live_trading_enabled:
+        if self.settings.mode.value == "LIVE" and (not self.settings.live_trading_enabled or not self.live_armed):
             return SubmitRejected("LIVE_DISABLED")
         try:
             raw = await self.transport.request(method, endpoint, True, params)
@@ -205,3 +208,17 @@ class BinanceAdapter:
         algo = intent.role in {"STOP", "TARGET", "PROVISIONAL_STOP"}
         return await self.mutate("DELETE", "/fapi/v1/algoOrder" if algo else "/fapi/v1/order",
             {"clientAlgoId": intent.client_id} if algo else {"symbol": intent.symbol, "origClientOrderId": intent.client_id})
+
+    async def submit_protection(self, intent: OrderIntent) -> SubmitResult:
+        return await self.mutate("POST", "/fapi/v1/algoOrder", {"algoType": "CONDITIONAL",
+            "symbol": intent.symbol, "side": intent.side.value, "positionSide": "BOTH",
+            "type": "TAKE_PROFIT_MARKET" if intent.role == "TARGET" else "STOP_MARKET",
+            "triggerPrice": str(intent.trigger_price), "workingType": "MARK_PRICE",
+            "closePosition": "true", "clientAlgoId": intent.client_id})
+
+    async def reduce_position(self, symbol: str, side: PositionSide, quantity: D,
+                              client_id: str) -> SubmitResult:
+        return await self.mutate("POST", "/fapi/v1/order", {"symbol": symbol,
+            "side": "SELL" if side is PositionSide.LONG else "BUY", "positionSide": "BOTH",
+            "type": "MARKET", "reduceOnly": "true", "quantity": str(quantity),
+            "newClientOrderId": client_id, "newOrderRespType": "RESULT"})

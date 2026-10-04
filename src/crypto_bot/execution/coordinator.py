@@ -5,14 +5,14 @@ from typing import Any
 
 from crypto_bot.config import Settings
 from crypto_bot.domain.clock import Clock
-from crypto_bot.domain.enums import OrderState, PositionPhase, PositionSide
+from crypto_bot.domain.enums import ExitReason, OrderSide, OrderState, PositionPhase, PositionSide
 from crypto_bot.domain.models import (
     ApprovedSize, EntryContext, OrderIntent, OrderObservation, Position, RiskInput,
     RiskPolicy, Signal, SubmitAck, SubmitRejected,
 )
 from crypto_bot.risk.eligibility import check_eligibility
 from crypto_bot.risk.sizing import size_entry
-from crypto_bot.storage.repository import Repository
+from crypto_bot.storage.repository import Repository, make_intent
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,13 @@ class EntryOutcome:
     status: str
     reason: str | None = None
     intent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ExitResult:
+    confirmed_flat: bool
+    cleanup_complete: bool
+    reason: str | None = None
 
 
 class ExecutionCoordinator:
@@ -119,3 +126,79 @@ class ExecutionCoordinator:
                 self.clock.now_ms() - (position.first_fill_ms if position else self.repo.current_trial().start_ms) > 30000
             ):
                 self.repo.latch_halt(intent.run_id, "UNRESOLVED_ENTRY")
+
+    async def cleanup_flat(self) -> bool:
+        snapshot = await self.exchange.fetch_snapshot()
+        if snapshot.positions:
+            return False
+        for intent in self.repo.intents():
+            state = self.repo.intent_state(intent.logical_id)
+            if state.terminal:
+                continue
+            if intent.role == "ENTRY" and state in {OrderState.PREPARED, OrderState.UNKNOWN, OrderState.SUBMITTED}:
+                observed = await self.exchange.find_order(intent)
+                if observed is None or not observed.state.terminal:
+                    return False
+                self.repo.record_order(observed)
+                continue
+            result = await self.exchange.cancel_order(intent)
+            if isinstance(result, SubmitAck):
+                self.repo.record_order(result.observation)
+            observed = await self.exchange.find_order(intent)
+            if observed is None or not observed.state.terminal:
+                return False
+            self.repo.record_order(observed)
+        self.repo.save_position(None)
+        self.repo.release_slot()
+        return True
+
+    async def request_exit(self, reason: ExitReason) -> ExitResult:
+        trial = self.repo.current_trial()
+        assert trial is not None
+        if reason in {ExitReason.TRIAL_LOSS, ExitReason.PROTECTION_FAILURE, ExitReason.RECOVERY_FAULT}:
+            self.repo.latch_halt(trial.run_id, reason.value)
+        elif reason in {ExitReason.OPERATOR, ExitReason.FUNDING_RISK}:
+            self.repo.pause()
+        for intent in self.repo.intents():
+            if intent.role == "ENTRY" and not self.repo.intent_state(intent.logical_id).terminal:
+                result = await self.exchange.cancel_order(intent)
+                if isinstance(result, SubmitAck):
+                    self.repo.record_order(result.observation)
+        try:
+            snapshot = await self.exchange.fetch_snapshot()
+        except Exception:
+            return ExitResult(False, False, "ACCOUNT_UNAVAILABLE")
+        owned = self.repo.position()
+        if owned is None:
+            complete = await self.cleanup_flat() if not snapshot.positions else False
+            return ExitResult(not snapshot.positions, complete)
+        real = next((p for p in snapshot.positions if p.symbol == owned.symbol and p.side is owned.side), None)
+        if real is not None:
+            self.repo.save_position(replace(owned, quantity=real.quantity, phase=PositionPhase.EXIT_PENDING))
+            existing = next((i for i in self.repo.intents() if i.signal_id == self.repo.intents()[0].signal_id and i.role == "EXIT" and not self.repo.intent_state(i.logical_id).terminal), None)
+            if existing is not None:
+                observed = await self.exchange.find_order(existing)
+                if observed is not None:
+                    self.repo.record_order(observed)
+                if observed is None or not observed.state.terminal:
+                    return ExitResult(False, False, "EXIT_OUTCOME_UNKNOWN")
+            else:
+                entries = next(i for i in self.repo.intents() if i.logical_id == owned.intent_id)
+                generation = sum(i.role == "EXIT" and i.signal_id == entries.signal_id for i in self.repo.intents())
+                exit_intent = make_intent(trial.run_id, entries.signal_id, "EXIT", generation, owned.symbol,
+                                          OrderSide.SELL if owned.side is PositionSide.LONG else OrderSide.BUY,
+                                          real.quantity)
+                self.repo.add_intent(exit_intent, {"reason": reason.value})
+                self.repo.set_intent_state(exit_intent.logical_id, OrderState.SUBMITTED)
+                result = await self.exchange.reduce_position(owned.symbol, owned.side, real.quantity, exit_intent.client_id)
+                if isinstance(result, SubmitAck):
+                    self.repo.record_order(result.observation)
+                else:
+                    self.repo.set_intent_state(exit_intent.logical_id, OrderState.UNKNOWN)
+            snapshot = await self.exchange.fetch_snapshot()
+        flat = not any(p.symbol == owned.symbol and p.side is owned.side for p in snapshot.positions)
+        if not flat:
+            return ExitResult(False, False, "EXPOSURE_REMAINS")
+        self.repo.save_position(None)
+        complete = await self.cleanup_flat()
+        return ExitResult(True, complete, None if complete else "RESIDUAL_ORDERS_UNRESOLVED")
