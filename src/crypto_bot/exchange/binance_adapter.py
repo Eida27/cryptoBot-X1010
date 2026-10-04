@@ -10,8 +10,8 @@ from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futur
 
 from crypto_bot.config import ConfigurationError, Settings, validate_mode
 from crypto_bot.domain.clock import Clock, SystemClock
-from crypto_bot.domain.models import ExchangeSnapshot, SymbolRules
-from crypto_bot.exchange.normalization import normalize_rules, normalize_snapshot
+from crypto_bot.domain.models import ExchangeSnapshot, SymbolRules, OrderIntent, SubmitResult, SubmitAck, SubmitUnknown, SubmitRejected, OrderObservation
+from crypto_bot.exchange.normalization import normalize_rules, normalize_snapshot, normalize_order
 
 # Generic SDK request methods preserve decimal strings before generated model coercion.
 READ_ENDPOINTS = {
@@ -167,3 +167,41 @@ class BinanceAdapter:
         from crypto_bot.exchange.streams import execution_stream
 
         return execution_stream(self)
+
+    async def mutate(self, method: str, endpoint: str, params: dict[str, Any]) -> SubmitResult:
+        if not self.private:
+            raise ConfigurationError("Public adapter cannot mutate orders")
+        if self.settings.mode.value == "LIVE" and not self.settings.live_trading_enabled:
+            return SubmitRejected("LIVE_DISABLED")
+        try:
+            raw = await self.transport.request(method, endpoint, True, params)
+            if method == "DELETE" and "symbol" not in raw:
+                return SubmitUnknown("CANCELLATION_REQUIRES_STATUS_CONFIRMATION")
+            namespace = "algo" if "algo" in endpoint.lower() else "ordinary"
+            return SubmitAck(normalize_order(raw, self.clock.now_ms(), namespace))
+        except Exception as exc:
+            if exc.__class__.__name__ == "BadRequestError" and getattr(exc, "status_code", 0) not in {-1006, -1007}:
+                return SubmitRejected(f"VENUE_REJECTED_{getattr(exc, 'status_code', 'UNKNOWN')}")
+            return SubmitUnknown()
+
+    async def submit_entry(self, intent: OrderIntent) -> SubmitResult:
+        return await self.mutate("POST", "/fapi/v1/order", {"symbol": intent.symbol,
+            "side": intent.side.value, "type": "LIMIT", "timeInForce": "IOC", "positionSide": "BOTH",
+            "quantity": str(intent.quantity), "price": str(intent.limit_price),
+            "newClientOrderId": intent.client_id, "newOrderRespType": "RESULT"})
+
+    async def find_order(self, intent: OrderIntent) -> OrderObservation | None:
+        algo = intent.role in {"STOP", "TARGET", "PROVISIONAL_STOP"}
+        try:
+            raw = await self.read("query_algo_order" if algo else "query_order", **(
+                {"clientAlgoId": intent.client_id} if algo else {"symbol": intent.symbol, "origClientOrderId": intent.client_id}))
+            return normalize_order(raw, self.clock.now_ms(), "algo" if algo else "ordinary")
+        except Exception as exc:
+            if getattr(exc, "status_code", 0) in {-2013, -2011, 404}:
+                return None
+            raise
+
+    async def cancel_order(self, intent: OrderIntent) -> SubmitResult:
+        algo = intent.role in {"STOP", "TARGET", "PROVISIONAL_STOP"}
+        return await self.mutate("DELETE", "/fapi/v1/algoOrder" if algo else "/fapi/v1/order",
+            {"clientAlgoId": intent.client_id} if algo else {"symbol": intent.symbol, "origClientOrderId": intent.client_id})
