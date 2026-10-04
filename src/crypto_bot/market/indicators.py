@@ -19,8 +19,11 @@ def update_indicators(state: IndicatorState, candle: Candle) -> IndicatorState:
         ema = (candle.close * D("2") + ema * D("199")) / D("201")
     atr, tr_sum, tr_count = state.atr, state.tr_sum, state.tr_count
     if state.previous_close is not None:
-        tr = max(candle.high - candle.low, abs(candle.high - state.previous_close),
-                 abs(candle.low - state.previous_close))
+        tr = max(
+            candle.high - candle.low,
+            abs(candle.high - state.previous_close),
+            abs(candle.low - state.previous_close),
+        )
         tr_count += 1
         if tr_count <= 14:
             tr_sum += tr
@@ -29,6 +32,16 @@ def update_indicators(state: IndicatorState, candle: Candle) -> IndicatorState:
         else:
             assert atr is not None
             atr = (atr * D("13") + tr) / D("14")
-    return replace(state, symbol=candle.symbol, seed_epoch=state.seed_epoch if state.count else candle.open_ms,
-        last_close_ms=candle.close_ms, count=count, close_sum=close_sum, tr_sum=tr_sum,
-        tr_count=tr_count, previous_close=candle.close, ema=ema, atr=atr)
+    return replace(
+        state,
+        symbol=candle.symbol,
+        seed_epoch=state.seed_epoch if state.count else candle.open_ms,
+        last_close_ms=candle.close_ms,
+        count=count,
+        close_sum=close_sum,
+        tr_sum=tr_sum,
+        tr_count=tr_count,
+        previous_close=candle.close,
+        ema=ema,
+        atr=atr,
+    )

@@ -14,13 +14,21 @@ def test_paper_is_default_and_live_is_disabled():
     assert not settings.entries_enabled
 
 
-@pytest.mark.parametrize("changes", [
-    {"leverage": "3"}, {"initial_capital_usdt": "0"},
-    {"initial_capital_usdt": "NaN"}, {"initial_capital_usdt": "Infinity"},
-    {"database": "state/shared.sqlite3"}, {"rest_url": "https://evil.example"},
-    {"entries_enabled": True}, {"mode": "LIVE", "host_profile": "local"},
-    {"initial_capital_usdt": None}, {"symbols": ["DOGEUSDT"]},
-])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"leverage": "3"},
+        {"initial_capital_usdt": "0"},
+        {"initial_capital_usdt": "NaN"},
+        {"initial_capital_usdt": "Infinity"},
+        {"database": "state/shared.sqlite3"},
+        {"rest_url": "https://evil.example"},
+        {"entries_enabled": True},
+        {"mode": "LIVE", "host_profile": "local"},
+        {"initial_capital_usdt": None},
+        {"symbols": ["DOGEUSDT"]},
+    ],
+)
 def test_unsafe_configuration_is_rejected(changes):
     from crypto_bot.config import ConfigurationError, Settings, validate_mode
 

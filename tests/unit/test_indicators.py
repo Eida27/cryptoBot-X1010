@@ -31,8 +31,14 @@ def test_atr_seed_uses_fourteen_ranges_with_a_previous_close():
     assert state.atr == D("2.285714285714285714285714285714286")
 
 
-@pytest.mark.parametrize("changes", [{"closed": False}, {"open_ms": 7200000, "close_ms": 10800000},
-                                     {"open_ms": 0, "close_ms": 3600000}])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"closed": False},
+        {"open_ms": 7200000, "close_ms": 10800000},
+        {"open_ms": 0, "close_ms": 3600000},
+    ],
+)
 def test_partial_duplicate_and_gap_cannot_advance_state(changes):
     from crypto_bot.market.indicators import update_indicators
 

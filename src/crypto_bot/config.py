@@ -60,8 +60,11 @@ class Settings(BaseSettings):
 
     @classmethod
     def settings_customise_sources(
-        cls, settings_cls: type[BaseSettings], init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource, dotenv_settings: PydanticBaseSettingsSource,
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (init_settings,)
@@ -72,8 +75,15 @@ class Settings(BaseSettings):
     @property
     def config_hash(self) -> str:
         values = self.safe_dict()
-        for field in ("mode", "database", "host_profile", "live_trading_enabled", "port",
-                      "bind_host", "secure_cookies"):
+        for field in (
+            "mode",
+            "database",
+            "host_profile",
+            "live_trading_enabled",
+            "port",
+            "bind_host",
+            "secure_cookies",
+        ):
             values.pop(field, None)
         return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
 

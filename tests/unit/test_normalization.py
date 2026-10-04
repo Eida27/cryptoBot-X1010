@@ -6,7 +6,9 @@ import pytest
 def test_decimal_boundary_preserves_strings_and_rejects_floats():
     from crypto_bot.exchange.normalization import decimal_value
 
-    assert decimal_value("0.1234567890123456789012345678901234") == D("0.1234567890123456789012345678901234")
+    assert decimal_value("0.1234567890123456789012345678901234") == D(
+        "0.1234567890123456789012345678901234"
+    )
     for value in [1.1, "NaN", "Infinity"]:
         with pytest.raises(ValueError):
             decimal_value(value)
@@ -24,8 +26,15 @@ def test_funding_interval_is_required_and_not_assumed():
     from crypto_bot.exchange.errors import MissingFundingData
     from crypto_bot.exchange.normalization import normalize_funding
 
-    value = normalize_funding({"lastFundingRate": "0.001", "nextFundingTime": 10000,
-                               "fundingIntervalHours": "4", "history": ["-0.002"]}, 0)
+    value = normalize_funding(
+        {
+            "lastFundingRate": "0.001",
+            "nextFundingTime": 10000,
+            "fundingIntervalHours": "4",
+            "history": ["-0.002"],
+        },
+        0,
+    )
     assert value.interval_hours == D("4")
     assert value.seven_day_max_abs_rate == D("0.002")
     with pytest.raises(MissingFundingData):
@@ -43,11 +52,19 @@ def test_missing_funding_is_not_zero():
 def test_filter_normalization_ignores_additive_fields_but_checks_assets():
     from crypto_bot.exchange.normalization import normalize_rules
 
-    payload = {"symbol": "SOLUSDT", "status": "TRADING", "contractType": "PERPETUAL",
-               "quoteAsset": "USDT", "marginAsset": "USDT", "newField": "ignored",
-               "filters": [{"filterType": "PRICE_FILTER", "tickSize": "0.01"},
-                           {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01", "maxQty": "100"},
-                           {"filterType": "MIN_NOTIONAL", "notional": "5"}]}
+    payload = {
+        "symbol": "SOLUSDT",
+        "status": "TRADING",
+        "contractType": "PERPETUAL",
+        "quoteAsset": "USDT",
+        "marginAsset": "USDT",
+        "newField": "ignored",
+        "filters": [
+            {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+            {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01", "maxQty": "100"},
+            {"filterType": "MIN_NOTIONAL", "notional": "5"},
+        ],
+    }
     rules = normalize_rules(payload, 12, {"notionalCap": "10000", "maintMarginRatio": "0.004"})
     assert rules.min_notional == D("5")
     assert rules.observed_ms == 12

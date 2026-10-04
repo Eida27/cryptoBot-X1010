@@ -25,6 +25,7 @@ async def test_read_backoff_does_not_refresh_source_timestamp(clock):
     class Transport:
         base_url = "https://fapi.binance.com"
         calls = 0
+
         async def read(self, method, **params):
             self.calls += 1
             if self.calls < 3:
@@ -43,6 +44,7 @@ def test_injected_transport_cannot_cross_demo_boundary():
 
     class WrongTransport:
         base_url = "https://fapi.binance.com"
+
     with pytest.raises(ConfigurationError):
         BinanceAdapter(Settings(mode="DEMO"), private=True, transport=WrongTransport())
 
@@ -56,9 +58,11 @@ async def test_pinned_sdk_raw_transport_keeps_decimal_strings(monkeypatch):
     response._content = b'{"markPrice":"100.1234567890123456789012345678901"}'
     response.headers["Content-Type"] = "application/json"
     observed = []
+
     def request(session, **kwargs):
         observed.append(kwargs)
         return response
+
     monkeypatch.setattr(requests.Session, "request", request)
     adapter = BinanceAdapter(Settings())
     value = await adapter.read("mark_price", symbol="SOLUSDT")

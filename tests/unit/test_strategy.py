@@ -15,7 +15,7 @@ def replay(bars):
     signals = []
     for i, bar in enumerate(bars):
         state = update_indicators(state, bar)
-        found = evaluate_signal(bars[max(0, i - 20):i + 1], state, "strategy")
+        found = evaluate_signal(bars[max(0, i - 20) : i + 1], state, "strategy")
         if found:
             signals.append(found)
     return signals
@@ -39,11 +39,12 @@ def test_future_rows_cannot_change_past_signals():
     bars = [candle(i) for i in range(1199)] + [candle(1199, "102")]
     before = replay(bars)
     extended = replay(bars + [candle(i, "1000") for i in range(1200, 1220)])
-    assert extended[:len(before)] == before
+    assert extended[: len(before)] == before
 
 
 def test_signal_function_rejects_partial_and_gapped_history():
     from crypto_bot.strategy.breakout import evaluate_signal
+
     state = IndicatorState("SOLUSDT", 0, 3600000000, 1000, ema=D("100"), atr=D("2"))
     with pytest.raises(ValueError):
         evaluate_signal([candle(999, "102", closed=False)], state, "strategy")

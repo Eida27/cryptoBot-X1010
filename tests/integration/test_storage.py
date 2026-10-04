@@ -19,21 +19,42 @@ def test_exact_decimals_and_idempotent_funding(tmp_path):
     from crypto_bot.domain.models import IncomeEvent
 
     repo = make_repo(tmp_path / "paper.sqlite3")
-    event = IncomeEvent("PAPER", "virtual", "SOLUSDT", "t1", "FUNDING_FEE",
-                        D("-0.0000000000000000000000000000000001"), "USDT", 2000)
+    event = IncomeEvent(
+        "PAPER",
+        "virtual",
+        "SOLUSDT",
+        "t1",
+        "FUNDING_FEE",
+        D("-0.0000000000000000000000000000000001"),
+        "USDT",
+        2000,
+    )
     assert repo.record_execution(event)
     assert not repo.record_execution(event)
     assert repo.count_income_events() == 1
     assert repo.income_events()[0].amount == event.amount
-    assert repo.db.connection.execute("SELECT typeof(amount) FROM income_events").fetchone()[0] == "text"
+    assert (
+        repo.db.connection.execute("SELECT typeof(amount) FROM income_events").fetchone()[0]
+        == "text"
+    )
 
 
 def test_duplicate_fill_does_not_book_commission_twice(tmp_path):
     from crypto_bot.domain.models import FillEvent
 
     repo = make_repo(tmp_path / "paper.sqlite3")
-    fill = FillEvent("PAPER", "virtual", "SOLUSDT", "1", "order1", D("100.01"),
-                     D("0.08"), D("0.00480048"), "USDT", 2000)
+    fill = FillEvent(
+        "PAPER",
+        "virtual",
+        "SOLUSDT",
+        "1",
+        "order1",
+        D("100.01"),
+        D("0.08"),
+        D("0.00480048"),
+        "USDT",
+        2000,
+    )
     assert repo.record_execution(fill)
     assert not repo.record_execution(fill)
     assert len(repo.fills()) == 1
@@ -43,8 +64,10 @@ def test_interrupted_write_rolls_back(tmp_path):
     repo = make_repo(tmp_path / "paper.sqlite3")
     with pytest.raises(RuntimeError):
         with repo.db.transaction() as connection:
-            connection.execute("INSERT INTO audit_events(run_id,at_ms,kind,payload) VALUES(?,1,'bad','{}')",
-                               (repo.current_trial().run_id,))
+            connection.execute(
+                "INSERT INTO audit_events(run_id,at_ms,kind,payload) VALUES(?,1,'bad','{}')",
+                (repo.current_trial().run_id,),
+            )
             raise RuntimeError("interrupted")
     assert not repo.db.connection.execute("SELECT 1 FROM audit_events WHERE kind='bad'").fetchone()
 
@@ -69,14 +92,18 @@ def test_two_reservations_share_single_durable_slot(tmp_path):
     path = tmp_path / "paper.sqlite3"
     repo = make_repo(path)
     size = ApprovedSize(D("0.08"), D("8"), D("0.1872"), D("0.2"), {"entry": "100"})
-    signals = [Signal(str(i), "strategy", symbol, 3600000, PositionSide.LONG, D("100"), D("1"))
-               for i, symbol in enumerate(["BTCUSDT", "SOLUSDT"])]
+    signals = [
+        Signal(str(i), "strategy", symbol, 3600000, PositionSide.LONG, D("100"), D("1"))
+        for i, symbol in enumerate(["BTCUSDT", "SOLUSDT"])
+    ]
+
     def reserve(signal):
         other = make_repo(path)
         try:
             return other.reserve_entry(signal, size)
         finally:
             other.db.close()
+
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(reserve, signals))
     assert sum(value is not None for value in results) == 1
@@ -125,8 +152,9 @@ repo.latch_halt(trial.run_id, 'TRIAL_LOSS')
 print('committed', flush=True)
 time.sleep(60)
 """
-    process = subprocess.Popen([sys.executable, "-c", script, str(path)], stdout=subprocess.PIPE,
-                               text=True)
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(path)], stdout=subprocess.PIPE, text=True
+    )
     try:
         assert process.stdout.readline().strip() == "committed"
     finally:

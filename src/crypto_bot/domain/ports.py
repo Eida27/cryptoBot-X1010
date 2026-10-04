@@ -1,11 +1,16 @@
 from collections.abc import AsyncIterator
-from typing import Protocol
 from decimal import Decimal
+from typing import Protocol
 
 from crypto_bot.domain.enums import PositionSide
 from crypto_bot.domain.models import (
-    ExchangeSnapshot, ExecutionEvent, MarketEvent, OrderIntent, OrderObservation,
-    SubmitResult, SymbolRules,
+    ExchangeSnapshot,
+    ExecutionEvent,
+    MarketEvent,
+    OrderIntent,
+    OrderObservation,
+    SubmitResult,
+    SymbolRules,
 )
 
 
@@ -18,5 +23,6 @@ class ExchangePort(Protocol):
     async def find_order(self, intent: OrderIntent) -> OrderObservation | None: ...
     async def cancel_order(self, intent: OrderIntent) -> SubmitResult: ...
     async def submit_protection(self, intent: OrderIntent) -> SubmitResult: ...
-    async def reduce_position(self, symbol: str, side: PositionSide,
-                              quantity: Decimal, client_id: str) -> SubmitResult: ...
+    async def reduce_position(
+        self, symbol: str, side: PositionSide, quantity: Decimal, client_id: str
+    ) -> SubmitResult: ...

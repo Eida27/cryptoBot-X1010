@@ -4,7 +4,9 @@ from typing import Any
 
 from binance_common.configuration import ConfigurationRestAPI
 from binance_common.utils import send_request
-from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import DerivativesTradingUsdsFutures
+from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+    DerivativesTradingUsdsFutures,
+)
 
 from crypto_bot.config import ConfigurationError, Settings, validate_mode
 from crypto_bot.domain.clock import Clock, SystemClock
@@ -42,22 +44,36 @@ class SDKTransport:
     def __init__(self, settings: Settings, private: bool) -> None:
         self.base_url = settings.rest_url
         self.private = private
-        self.configuration = ConfigurationRestAPI(base_path=self.base_url, retries=0, timeout=3000,
+        self.configuration = ConfigurationRestAPI(
+            base_path=self.base_url,
+            retries=0,
+            timeout=3000,
             api_key=settings.api_key.get_secret_value() or None if private else None,
-            api_secret=settings.api_secret.get_secret_value() or None if private else None)
+            api_secret=settings.api_secret.get_secret_value() or None if private else None,
+        )
         self.client = DerivativesTradingUsdsFutures(config_rest_api=self.configuration)
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="binance")
         self.pending: set[asyncio.Future[Any]] = set()
 
-    async def request(self, http_method: str, endpoint: str, signed: bool,
-                      params: dict[str, Any]) -> Any:
+    async def request(
+        self, http_method: str, endpoint: str, signed: bool, params: dict[str, Any]
+    ) -> Any:
         if signed and not self.private:
             raise ConfigurationError("Public client cannot access private endpoints")
         api = self.client.rest_api
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self.executor, lambda: send_request(
-            api._session, self.configuration, http_method, endpoint, payload=params,
-            is_signed=signed, signer=api._signer).data())
+        future = loop.run_in_executor(
+            self.executor,
+            lambda: send_request(
+                api._session,
+                self.configuration,
+                http_method,
+                endpoint,
+                payload=params,
+                is_signed=signed,
+                signer=api._signer,
+            ).data(),
+        )
         self.pending.add(future)
         future.add_done_callback(self.pending.discard)
         return await asyncio.shield(future)
@@ -71,8 +87,13 @@ class SDKTransport:
 
 
 class BinanceAdapter:
-    def __init__(self, settings: Settings, private: bool = False, transport: Any = None,
-                 clock: Clock | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        private: bool = False,
+        transport: Any = None,
+        clock: Clock | None = None,
+    ) -> None:
         validate_mode(settings)
         if private and settings.mode.value not in {"DEMO", "LIVE"}:
             raise ConfigurationError("PAPER/BACKTEST cannot create a private client")
@@ -91,7 +112,16 @@ class BinanceAdapter:
             try:
                 return await self.transport.read(method, **params)
             except Exception as exc:
-                if exc.__class__.__name__ in {"UnauthorizedError", "ForbiddenError", "BadRequestError", "RateLimitBanError"} or attempt == 2:
+                if (
+                    exc.__class__.__name__
+                    in {
+                        "UnauthorizedError",
+                        "ForbiddenError",
+                        "BadRequestError",
+                        "RateLimitBanError",
+                    }
+                    or attempt == 2
+                ):
                     raise
                 delay = max(0.25 * 2**attempt, float(getattr(exc, "retry_after", 0) or 0))
                 await self.clock.sleep(delay)
@@ -110,11 +140,17 @@ class BinanceAdapter:
     async def fetch_snapshot(self) -> ExchangeSnapshot:
         if not self.private:
             raise ConfigurationError("Virtual broker owns paper account state")
-        payload: dict[str, Any] = {"environment": self.settings.mode.value,
-                                   "account_id": self.account_id}
-        for name, method in (("account", "account"), ("positions", "positions"),
-                             ("orders", "open_orders"), ("algo_orders", "open_algo_orders"),
-                             ("income", "income")):
+        payload: dict[str, Any] = {
+            "environment": self.settings.mode.value,
+            "account_id": self.account_id,
+        }
+        for name, method in (
+            ("account", "account"),
+            ("positions", "positions"),
+            ("orders", "open_orders"),
+            ("algo_orders", "open_algo_orders"),
+            ("income", "income"),
+        ):
             payload[name] = await self.read(method)
         payload["fills"] = []
         for symbol in self.settings.symbols:
@@ -124,8 +160,10 @@ class BinanceAdapter:
 
     def market_events(self, symbols: tuple[str, ...]) -> Any:
         from crypto_bot.exchange.streams import market_stream
+
         return market_stream(self, symbols)
 
     def execution_events(self) -> Any:
         from crypto_bot.exchange.streams import execution_stream
+
         return execution_stream(self)
