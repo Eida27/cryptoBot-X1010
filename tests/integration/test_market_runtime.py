@@ -1,6 +1,8 @@
 import asyncio
 from decimal import Decimal as D
 
+import pytest
+
 from crypto_bot.domain.models import FundingEvent, MarkEvent
 from crypto_bot.execution.worker import BotWorker
 from crypto_bot.research.paper import PaperBroker
@@ -57,3 +59,70 @@ def test_funding_for_other_symbol_is_not_booked(repo, clock):
         FundingEvent("ETHUSDT", clock.now_ms(), D(".01"), D("100"), "eth")
     )
     assert not repo.income_events()
+
+
+@pytest.mark.parametrize("gap", ["stale_mark", "silent_book", "silent_symbol"])
+async def test_required_source_gap_permanently_interrupts_paper_even_with_other_streams(
+    repo, clock, gap
+):
+    from dataclasses import replace
+
+    from crypto_bot.domain.models import BookEvent, MarkEvent
+    from crypto_bot.execution.worker import BotWorker
+    from tests.fixtures.exchange import FakeExchange
+    from tests.fixtures.factories import context
+    from tests.integration.test_entry_execution import engine_for
+
+    worker = BotWorker(engine_for(repo, clock, FakeExchange(clock)))
+    worker.begin_market_observation({s: 3600000 for s in worker.engine.settings.symbols})
+    first = clock.now_ms()
+    for index in range(7):
+        for symbol in worker.engine.settings.symbols:
+            if gap == "silent_symbol" and symbol == "SOLUSDT" and index:
+                continue
+            stamp = first if gap == "stale_mark" and symbol == "SOLUSDT" else clock.now_ms()
+            worker.observe_mark(MarkEvent(symbol, stamp, D("100")))
+            if not (gap == "silent_book" and symbol == "SOLUSDT" and index):
+                worker.observe_book(
+                    BookEvent(replace(context(clock.now_ms()).market, symbol=symbol))
+                )
+        await worker.tick(clock.now_ms())
+        if worker.refresh_task:
+            await worker.refresh_task
+        clock.advance(1000)
+    assert repo.current_trial().qualification_status == "INTERRUPTED"
+    assert not repo.state()["reconciled"]
+    repo.resume(repo.current_trial().run_id)
+    assert repo.current_trial().qualification_status == "INTERRUPTED"
+
+
+async def test_startup_readiness_waits_for_all_required_sources(repo, clock):
+    from crypto_bot.execution.worker import BotWorker
+    from tests.fixtures.exchange import FakeExchange
+    from tests.integration.test_entry_execution import engine_for
+
+    worker = BotWorker(engine_for(repo, clock, FakeExchange(clock)))
+    worker.begin_market_observation({s: 3600000 for s in worker.engine.settings.symbols})
+    await worker.tick(clock.now_ms())
+    assert repo.current_trial().qualification_status == "WARMING_UP"
+    assert not repo.state()["reconciled"]
+    clock.advance(11000)
+    await worker.tick(clock.now_ms())
+    assert repo.current_trial().qualification_status == "INTERRUPTED"
+
+
+def test_required_sources_accept_bounded_clock_skew_and_reject_larger_future_times(repo, clock):
+    from dataclasses import replace
+
+    from crypto_bot.domain.models import BookEvent
+
+    worker = BotWorker(engine_for(repo, clock, FakeExchange(clock)))
+    worker.begin_market_observation({s: 3600000 for s in worker.engine.settings.symbols})
+    for symbol in worker.engine.settings.symbols:
+        worker.observe_mark(MarkEvent(symbol, clock.now_ms() + 500, D("100")))
+        worker.observe_book(BookEvent(replace(context(clock.now_ms()).market, symbol=symbol)))
+    worker.check_market_observation(clock.now_ms())
+    assert repo.current_trial().qualification_status == "OBSERVING"
+    worker.observe_mark(MarkEvent("SOLUSDT", clock.now_ms() + 2000, D("100")))
+    worker.check_market_observation(clock.now_ms())
+    assert repo.current_trial().qualification_status == "INTERRUPTED"

@@ -1,6 +1,8 @@
 from dataclasses import replace
 from decimal import Decimal as D
 
+import pytest
+
 from crypto_bot.config import STRATEGY_HASH, Settings
 
 
@@ -88,3 +90,42 @@ def test_negative_after_hosting_blocks_economic_review():
         .status.value
         == "FAIL"
     )
+
+
+def test_code_hash_covers_noneditable_package_and_rejects_missing_manifest(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+
+    from crypto_bot.research import gates
+
+    original = gates.code_hash()
+    source = Path(gates.__file__).resolve().parents[1]
+    installed = tmp_path / "site-packages" / "crypto_bot"
+    shutil.copytree(source, installed, ignore=shutil.ignore_patterns("__pycache__"))
+    monkeypatch.setattr(gates, "__file__", str(installed / "research" / "gates.py"))
+    assert gates.code_hash() == original
+    with (installed / "config.py").open("a", encoding="utf-8") as target:
+        target.write("\n# Changed installed implementation\n")
+    assert gates.code_hash() != original
+    (installed / "_build_manifest.json").unlink(missing_ok=True)
+    with pytest.raises(ValueError, match="manifest"):
+        gates.code_hash()
+
+
+def test_packaged_dependency_mismatch_fails_closed(tmp_path, monkeypatch):
+    import json
+    import shutil
+    from pathlib import Path
+
+    from crypto_bot.research import gates
+
+    source = Path(gates.__file__).resolve().parents[1]
+    installed = tmp_path / "site-packages" / "crypto_bot"
+    shutil.copytree(source, installed, ignore=shutil.ignore_patterns("__pycache__"))
+    path = installed / "_build_manifest.json"
+    value = json.loads(path.read_text())
+    value["versions"]["fastapi"] = "0.0.0"
+    path.write_text(json.dumps(value))
+    monkeypatch.setattr(gates, "__file__", str(installed / "research/gates.py"))
+    with pytest.raises(ValueError, match="dependency differs"):
+        gates.code_hash()

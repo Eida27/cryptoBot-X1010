@@ -14,14 +14,57 @@ from crypto_bot.storage.repository import Repository, digest, encode
 
 
 def code_hash() -> str:
-    root = Path(__file__).resolve().parents[3]
-    files = sorted((root / "src" / "crypto_bot").rglob("*.py"))
-    files += [root / "uv.lock"]
+    from importlib.metadata import distribution
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    package = Path(__file__).resolve().parents[1]
+    manifest_path = package / "_build_manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError("Required packaged build manifest is absent")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("format") != 1 or not manifest.get("lock_sha256"):
+        raise ValueError("Invalid packaged build manifest")
+    source_lock = package.parent.parent / "uv.lock"
+    if (
+        source_lock.is_file()
+        and hashlib.sha256(source_lock.read_bytes()).hexdigest() != manifest["lock_sha256"]
+    ):
+        raise ValueError("Source lock differs from packaged build manifest; regenerate it")
+    versions = {canonicalize_name(k): v for k, v in manifest["versions"].items()}
+    pending = [Requirement(value) for value in manifest["roots"]]
+    visited = set()
+    while pending:
+        requirement = pending.pop()
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        name = canonicalize_name(requirement.name)
+        if name in visited:
+            continue
+        visited.add(name)
+        installed = distribution(name)
+        if (
+            versions.get(name) != installed.version
+            or installed.version not in requirement.specifier
+        ):
+            raise ValueError(f"Installed dependency differs from build manifest: {name}")
+        pending.extend(Requirement(value) for value in installed.requires or ())
+    if not visited:
+        raise ValueError("Empty dependency build manifest")
+    files = sorted(
+        path
+        for path in package.rglob("*")
+        if path.is_file()
+        and path.suffix in {".py", ".json", ".sql", ".html", ".css", ".js"}
+        and "__pycache__" not in path.parts
+    )
+    if not any(path.suffix == ".py" for path in files):
+        raise ValueError("Installed code is absent from build manifest scope")
     hasher = hashlib.sha256()
     for path in files:
-        if path.exists():
-            hasher.update(path.relative_to(root).as_posix().encode())
-            hasher.update(path.read_bytes())
+        hasher.update(path.relative_to(package).as_posix().encode())
+        hasher.update(path.read_bytes().replace(b"\r\n", b"\n"))
     return hasher.hexdigest()
 
 

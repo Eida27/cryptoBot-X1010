@@ -16,7 +16,7 @@ Open [the local dashboard](http://127.0.0.1:8000). It requires the password you 
 Research workflow:
 
 ```powershell
-uv run cbot data download --symbols BTCUSDT,ETHUSDT,SOLUSDT --months 24 --warmup 1000 --out data/research
+uv run cbot data download --symbols BTCUSDT,ETHUSDT,SOLUSDT --months 24 --warmup 1000 --brackets data/brackets.json --out data/research
 uv run cbot backtest --dataset data/research --config config/backtest.toml --out reports/research
 uv run cbot backtest --dataset data/research --config config/backtest.toml --out reports/research --stress
 uv run cbot report --run reports/research/base-run.json --hosting-monthly-usd 6 --out reports/base

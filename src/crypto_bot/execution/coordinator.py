@@ -130,6 +130,13 @@ class ExecutionCoordinator:
             first = (
                 current.first_fill_ms if current.first_fill_ms is not None else self.clock.now_ms()
             )
+            fill_times = [
+                fill.at_ms
+                for fill in self.repo.fills()
+                if fill.order_id in {current.venue_id, intent.client_id}
+                and fill.symbol == intent.symbol
+            ]
+            first = min([first, *fill_times])
             first = min(first, old.first_fill_ms) if old else first
             position = Position(
                 intent.symbol,
@@ -293,11 +300,16 @@ class ExecutionCoordinator:
                 )
                 self.repo.add_intent(exit_intent, {"reason": reason.value})
                 self.repo.set_intent_state(exit_intent.logical_id, OrderState.SUBMITTED)
-                result = await self.exchange.reduce_position(
-                    owned.symbol, owned.side, real.quantity, exit_intent.client_id
-                )
+                try:
+                    result = await self.exchange.reduce_position(
+                        owned.symbol, owned.side, real.quantity, exit_intent.client_id
+                    )
+                except Exception:
+                    result = None
                 if isinstance(result, SubmitAck):
                     self.repo.record_order(result.observation)
+                elif isinstance(result, SubmitRejected):
+                    self.repo.set_intent_state(exit_intent.logical_id, OrderState.REJECTED)
                 else:
                     self.repo.set_intent_state(exit_intent.logical_id, OrderState.UNKNOWN)
             snapshot = await self.exchange.fetch_snapshot()

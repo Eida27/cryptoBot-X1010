@@ -35,6 +35,9 @@ def main() -> None:
     download.add_argument("--start")
     download.add_argument("--end")
     download.add_argument("--out", type=Path, required=True)
+    download.add_argument(
+        "--brackets", type=Path, help="Fresh read-only bracket/fee export to freeze"
+    )
     backtest = commands.add_parser("backtest")
     backtest.add_argument("--dataset", type=Path, required=True)
     backtest.add_argument("--config", type=Path, default=Path("config/backtest.toml"))
@@ -139,7 +142,9 @@ def main() -> None:
                 utc_ms(args.end, end),
                 args.warmup,
             )
-            manifest = asyncio.run(download_dataset(request, args.out))
+            manifest = asyncio.run(
+                download_dataset(request, args.out, bracket_metadata=args.brackets)
+            )
             print(
                 json.dumps(
                     {

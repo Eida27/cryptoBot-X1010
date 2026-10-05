@@ -69,6 +69,9 @@ async def run_market(worker: BotWorker, adapter: BinanceAdapter) -> None:
             start = int(rows[-1][6]) + 1
         states[symbol] = state
         repo.checkpoint_indicator(state)
+    worker.begin_market_observation(
+        {symbol: state.last_close_ms for symbol, state in states.items()}
+    )
     pending: dict[int, list[Any]] = {}
     async for event in adapter.market_events(adapter.settings.symbols):
         trial = repo.current_trial()
@@ -79,8 +82,10 @@ async def run_market(worker: BotWorker, adapter: BinanceAdapter) -> None:
             if trial.mode is Mode.PAPER:
                 mark_interrupted(repo, trial.run_id, event.reason, event.at_ms)
             continue
-        if isinstance(event, BookEvent) and isinstance(broker, PaperBroker):
-            broker.capture(event)
+        if isinstance(event, BookEvent):
+            worker.observe_book(event)
+            if isinstance(broker, PaperBroker):
+                broker.capture(event)
         elif isinstance(event, MarkEvent):
             worker.observe_mark(event)
             if not isinstance(broker, PaperBroker):
@@ -141,6 +146,9 @@ async def run_market(worker: BotWorker, adapter: BinanceAdapter) -> None:
                 funding_due[event.symbol] = event.next_funding_ms
         elif isinstance(event, CandleEvent):
             candle = event.candle
+            worker.candle_closes[candle.symbol] = max(
+                candle.close_ms, worker.candle_closes.get(candle.symbol, 0)
+            )
             if candle.close_ms <= states[candle.symbol].last_close_ms:
                 continue
             try:
@@ -284,8 +292,7 @@ def _build_service(settings: Settings, process_lock: ProcessLock) -> Any:
                 while True:
                     try:
                         async for event in adapter.execution_events():
-                            repo.record_execution(event)
-                            await worker.refresh()
+                            await worker.observe_execution(event)
                     except Exception:
                         repo.mark_reconciled(clock.now_ms(), False)
                         await worker.refresh()

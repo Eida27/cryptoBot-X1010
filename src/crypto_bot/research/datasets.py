@@ -350,7 +350,10 @@ def iter_events(manifest: DatasetManifest) -> Iterator[MarketEvent]:
 
 
 async def download_dataset(
-    request: DatasetRequest, destination: Path, adapter: BinanceAdapter | None = None
+    request: DatasetRequest,
+    destination: Path,
+    adapter: BinanceAdapter | None = None,
+    bracket_metadata: Path | None = None,
 ) -> DatasetManifest:
     public = adapter or BinanceAdapter(Settings(mode="BACKTEST"))
     clock = await public.read("check_server_time")
@@ -358,6 +361,39 @@ async def download_dataset(
         raise ValueError("Historical range contains incomplete candles")
     information = await public.read("exchange_information")
     filters = {v["symbol"]: v for v in information["symbols"] if v["symbol"] in request.symbols}
+    if bracket_metadata is not None:
+        from crypto_bot.exchange.normalization import normalize_rules
+
+        metadata = json.loads(bracket_metadata.read_text(encoding="utf-8"))
+        observed = int(metadata.get("observed_ms", 0))
+        if metadata.get("environment") not in {"DEMO", "LIVE"} or not (
+            observed > 0 and 0 <= int(clock["serverTime"]) - observed <= 21600000
+        ):
+            raise ValueError("Missing or stale verified maintenance metadata")
+        for symbol in request.symbols:
+            bracket = metadata.get("brackets", {}).get(symbol)
+            fee = D(str(metadata.get("fees", {}).get(symbol, "NaN")))
+            if not bracket or not fee.is_finite() or fee < 0 or symbol not in filters:
+                raise ValueError(f"{symbol}: incomplete maintenance/fee export")
+            rules = normalize_rules(filters[symbol], observed, bracket)
+            if (
+                rules.maintenance_rate is None
+                or not 0 <= rules.maintenance_rate < 1
+                or rules.maintenance_deduction < 0
+                or rules.bracket_limit <= 0
+            ):
+                raise ValueError(f"{symbol}: invalid maintenance bracket")
+            filters[symbol] = {
+                **filters[symbol],
+                "maintenanceBracket": bracket,
+                "takerFeeRate": str(fee),
+                "maintenanceProvenance": {
+                    "environment": metadata["environment"],
+                    "observed_ms": observed,
+                    "checksum": checksum(bracket_metadata),
+                    "assumption": "Verified current snapshot; historical tiers not reconstructed",
+                },
+            }
     # Stage only one UTC day in memory; compressed files are streamed thereafter.
     destination.mkdir(parents=True, exist_ok=True)
     staged = destination / "staging"

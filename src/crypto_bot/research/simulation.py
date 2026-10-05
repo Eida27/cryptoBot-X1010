@@ -368,6 +368,11 @@ def run_backtest(manifest: DatasetManifest, settings: Settings, stress: bool = F
     if not quality.valid:
         raise ValueError("Invalid dataset: " + "; ".join(quality.issues))
     broker = SimulationBroker(settings.initial_capital_usdt, stress)
+    observed_fee = max(
+        (D(str(raw.get("takerFeeRate", "0.0006"))) for raw in manifest.filters.values()),
+        default=D("0.0006"),
+    )
+    broker.fee_rate = max(settings.fee_floor, D("0.0006"), observed_fee) * (2 if stress else 1)
     broker.leverage = settings.leverage
     from crypto_bot.research.gates import code_hash
 

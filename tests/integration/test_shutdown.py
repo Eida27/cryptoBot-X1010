@@ -61,3 +61,37 @@ async def test_closing_dust_is_not_rejected_by_opening_minima(repo, clock):
     result = await engine.request_exit(ExitReason.OPERATOR)
     assert result.confirmed_flat
     assert exchange.position is None
+
+
+async def test_definitive_exit_rejection_allows_new_generation_with_protection_retained(
+    repo, clock
+):
+    from crypto_bot.domain.enums import OrderState
+    from crypto_bot.domain.models import SubmitRejected
+
+    engine, exchange = await setup(repo, clock)
+    original = exchange.reduce_position
+
+    async def reject(*args):
+        return SubmitRejected("STALE_EXIT_BOOK")
+
+    exchange.reduce_position = reject
+    assert not (await engine.request_exit(ExitReason.OPERATOR)).confirmed_flat
+    first = next(i for i in repo.intents() if i.role == "EXIT")
+    assert repo.intent_state(first.logical_id) is OrderState.REJECTED
+    assert repo.position() and not any(
+        c[0] == "cancel" and c[1].role == "STOP" for c in exchange.calls
+    )
+    exchange.reduce_position = original
+    assert (await engine.request_exit(ExitReason.OPERATOR)).confirmed_flat
+    assert len([i for i in repo.intents() if i.role == "EXIT"]) == 2
+
+
+async def test_ambiguous_exit_is_not_resubmitted(repo, clock):
+    engine, exchange = await setup(repo, clock)
+    exchange.reject_exit = True
+    await engine.request_exit(ExitReason.OPERATOR)
+    exchange.reject_exit = False
+    result = await engine.request_exit(ExitReason.TRIAL_LOSS)
+    assert result.reason == "EXIT_OUTCOME_UNKNOWN"
+    assert len([c for c in exchange.calls if c[0] == "reduce"]) == 1

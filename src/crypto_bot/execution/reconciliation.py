@@ -127,6 +127,24 @@ class Reconciler:
                 mismatches.append("UNSUPPORTED_INCOME_ASSET")
             if income.income_type not in {"FUNDING_FEE", "COMMISSION", "REALIZED_PNL"}:
                 mismatches.append("EXTERNAL_ACCOUNT_ACTIVITY")
+        # Terminal IOCs disappear from openOrders. A private update may have
+        # journaled their fill before recovery ever created the local position.
+        active_entry = next(
+            (i for i in known.values() if i.role == "ENTRY" and i.logical_id == active_identity),
+            None,
+        )
+        if active_entry is not None:
+            cached = self.repo.order(active_entry.client_id)
+            if (
+                cached is not None
+                and cached.cumulative_quantity > 0
+                and any(
+                    p.symbol == active_entry.symbol
+                    and p.side.value == ("LONG" if active_entry.side.value == "BUY" else "SHORT")
+                    for p in snapshot.positions
+                )
+            ):
+                self.engine.apply_observation(active_entry, cached)
         owned = self.repo.position()
         for real in snapshot.positions:
             if owned is None or real.symbol != owned.symbol or real.side is not owned.side:

@@ -6,9 +6,13 @@ from typing import Any
 from crypto_bot.domain.enums import ExitReason, Mode
 from crypto_bot.domain.models import (
     AccountSnapshot,
+    BookEvent,
     ControlCommand,
     EntryContext,
+    ExecutionEvent,
+    FillEvent,
     MarkEvent,
+    OrderUpdate,
     Signal,
 )
 from crypto_bot.execution.coordinator import ExecutionCoordinator
@@ -57,20 +61,107 @@ class BotWorker:
         self.loop_lags: list[float] = []
         self.marks: dict[str, MarkEvent] = {}
         self.refresh_lock = asyncio.Lock()
+        self.market_started_ms: int | None = None
+        self.market_ready = False
+        self.books: dict[str, int] = {}
+        self.candle_closes: dict[str, int] = {}
 
     def observe_mark(self, event: MarkEvent) -> None:
         self.marks[event.symbol] = event
-        self.market_heartbeat_ms = self.clock.now_ms()
+        self.market_heartbeat_ms = min(self.clock.now_ms(), event.at_ms)
+
+    def observe_book(self, event: BookEvent) -> None:
+        self.books[event.frame.symbol] = min(
+            event.frame.observed_ms, event.frame.freshness.get("quote", 0)
+        )
+
+    def begin_market_observation(self, candle_closes: dict[str, int]) -> None:
+        self.market_started_ms = self.clock.now_ms()
+        self.market_ready = False
+        self.books.clear()
+        self.marks.clear()
+        self.candle_closes = dict(candle_closes)
+        trial = self.repo.current_trial()
+        if trial and trial.mode is Mode.PAPER:
+            self.repo.db.connection.execute(
+                "UPDATE runs SET qualification_status='WARMING_UP' WHERE run_id=? AND qualification_status!='INTERRUPTED'",
+                (trial.run_id,),
+            )
+        self.repo.mark_reconciled(self.clock.now_ms(), False)
+
+    def check_market_observation(self, now_ms: int) -> None:
+        if self.market_started_ms is None:
+            return
+        boundary = now_ms // 3600000 * 3600000
+        fresh = all(
+            symbol in self.marks
+            and self.marks[symbol].at_ms <= now_ms + 1000
+            and now_ms - min(now_ms, self.marks[symbol].at_ms) <= 3000
+            and symbol in self.books
+            and 0 <= now_ms - self.books[symbol] <= 3000
+            and self.candle_closes.get(symbol, -1)
+            >= boundary - (3600000 if now_ms - boundary <= 10000 else 0)
+            for symbol in self.engine.settings.symbols
+        )
+        trial = self.repo.current_trial()
+        assert trial is not None
+        if trial.qualification_status == "INTERRUPTED":
+            self.repo.mark_reconciled(now_ms, False)
+        elif fresh:
+            if not self.market_ready and trial.mode is Mode.PAPER:
+                self.repo.db.connection.execute(
+                    "UPDATE runs SET qualification_status='OBSERVING' WHERE run_id=?",
+                    (trial.run_id,),
+                )
+                self.repo.db.connection.execute(
+                    "INSERT INTO audit_events(run_id,at_ms,kind,payload) VALUES(?,?,'PAPER_OBSERVATION_STARTED','{}')",
+                    (trial.run_id, now_ms),
+                )
+            self.market_ready = True
+        else:
+            self.repo.mark_reconciled(now_ms, False)
+            if self.market_ready or now_ms - self.market_started_ms > 10000:
+                self.last_reason = "REQUIRED_MARKET_SOURCE_STALE"
+                if trial.mode is Mode.PAPER:
+                    mark_interrupted(self.repo, trial.run_id, self.last_reason, now_ms)
 
     async def refresh(self) -> None:
         async with self.refresh_lock:
             await self._refresh()
+
+    async def observe_execution(self, event: ExecutionEvent) -> None:
+        self.repo.record_execution(event)
+        slot = self.repo.db.connection.execute("SELECT intent_id FROM active_slot").fetchone()
+        entry = next(
+            (
+                i
+                for i in self.repo.intents()
+                if slot and i.logical_id == slot[0] and i.role == "ENTRY"
+            ),
+            None,
+        )
+        if entry is not None:
+            order = self.repo.order(entry.client_id)
+            attributed = (
+                isinstance(event, OrderUpdate) and event.observation.client_id == entry.client_id
+            ) or (
+                isinstance(event, FillEvent)
+                and order is not None
+                and event.order_id in {entry.client_id, order.venue_id}
+                and event.symbol == entry.symbol
+            )
+            if attributed and order is not None:
+                self.engine.apply_observation(entry, order)
+                if self.engine.protection and self.repo.position():
+                    await self.engine.protection.protect_observed_stop(entry.logical_id)
+        await self.refresh()
 
     async def _refresh(self) -> None:
         try:
             snapshot = await self.exchange.fetch_snapshot()
             self.account = snapshot.account
             await self.reconciler.recover(snapshot)
+            self.check_market_observation(self.clock.now_ms())
         except Exception:
             self.last_reason = "ACCOUNT_REFRESH_FAILED"
             self.repo.mark_reconciled(self.clock.now_ms(), False)
@@ -204,6 +295,7 @@ class BotWorker:
             command = self.repo.pending_commands()[0]
             self.command_task = asyncio.create_task(self.consume_command(command))
             await asyncio.sleep(0)
+        self.check_market_observation(now_ms)
 
     async def consume_command(self, command: ControlCommand) -> None:
         result = await self.handle_command(command)

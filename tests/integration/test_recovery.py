@@ -29,6 +29,56 @@ async def test_lost_ack_recovers_venue_truth_without_resubmission(repo, clock):
     assert exchange.entry_submission_count == 1
 
 
+async def test_terminal_private_update_recovers_owned_fill_absent_from_open_orders(repo, clock):
+    from crypto_bot.domain.models import OrderUpdate
+
+    exchange = FakeExchange(clock)
+    engine = engine_for(repo, clock, exchange)
+    exchange.accept_then_timeout()
+    await engine.process_signal(signal(), context())
+    entry = next(i for i in repo.intents() if i.role == "ENTRY")
+    actual_first = exchange.fills[0].at_ms
+    clock.advance(2000)
+    repo.record_execution(
+        OrderUpdate(replace(exchange.orders[entry.client_id], first_fill_ms=None))
+    )
+    exchange.hidden = False
+    protect(engine)
+    snapshot = replace(await exchange.fetch_snapshot(), ordinary_orders=())
+    from crypto_bot.execution.reconciliation import Reconciler
+
+    result = await Reconciler(engine).recover(snapshot)
+    assert "UNKNOWN_POSITION" not in result.accounting_mismatches
+    assert result.entry_prerequisites_satisfied
+    assert repo.position().quantity == exchange.position.quantity
+    assert repo.position().first_fill_ms == actual_first
+    assert any(call[0] == "protection" for call in exchange.calls)
+    assert exchange.entry_submission_count == 1
+
+
+async def test_private_fill_gets_provisional_stop_before_unavailable_rest(repo, clock):
+    from crypto_bot.domain.models import OrderUpdate
+    from crypto_bot.execution.worker import BotWorker
+
+    exchange = FakeExchange(clock)
+    engine = engine_for(repo, clock, exchange)
+    exchange.accept_then_timeout()
+    await engine.process_signal(signal(), context())
+    entry = next(i for i in repo.intents() if i.role == "ENTRY")
+    exchange.hidden = False
+    protect(engine)
+
+    async def unavailable():
+        raise ConnectionError("REST temporarily unavailable")
+
+    exchange.fetch_snapshot = unavailable
+    worker = BotWorker(engine)
+    await worker.observe_execution(OrderUpdate(exchange.orders[entry.client_id]))
+    assert repo.position().quantity == D("0.08")
+    assert any(c[0] == "protection" and c[1].role == "PROVISIONAL_STOP" for c in exchange.calls)
+    assert not repo.state()["reconciled"]
+
+
 async def test_restart_preserves_original_floor_and_loss_halt(repo, clock):
     repo.latch_halt(repo.current_trial().run_id, "TRIAL_LOSS")
     exchange = FakeExchange(clock)
