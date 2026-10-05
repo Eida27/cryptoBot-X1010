@@ -1,16 +1,64 @@
-.venv/
-.superpowers/
-__pycache__/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-*.egg-info/
+# Local credentials and private keys
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+
+# Python environments, bytecode, caches and package output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+*.egg-info/
+build/
+dist/
+
+# Coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Bot runtime, private research results and local agent tools
+.superpowers/
 state/
 data/
 reports/
 backups/
 artifacts/
-dist/
+logs/
+*.log
+*.log.*
+
+# SQLite databases and sidecars, including custom database locations
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.db.lock
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite.lock
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.sqlite3.lock
+
+# OS and editor temporary files
+.DS_Store
+Thumbs.db
+desktop.ini
+Desktop.ini
+*.swp
+*.swo
+*~
