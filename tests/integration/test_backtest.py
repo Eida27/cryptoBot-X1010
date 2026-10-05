@@ -1,5 +1,7 @@
 from decimal import Decimal as D
 
+import pytest
+
 from crypto_bot.config import Settings
 from crypto_bot.domain.models import FundingEvent
 from tests.unit.test_datasets import minute
@@ -28,7 +30,8 @@ def test_backtest_replays_same_hash_to_identical_ledgers(tmp_path):
     assert "INSUFFICIENT_WARMUP" in a.failed_assumptions
 
 
-def test_hourly_candidates_rank_by_quote_volume_before_reserving(tmp_path, monkeypatch):
+@pytest.mark.parametrize("jitter_ms", [0, 16])
+def test_hourly_candidates_rank_by_quote_volume_before_reserving(tmp_path, monkeypatch, jitter_ms):
     import json
     from dataclasses import replace
     from pathlib import Path
@@ -51,7 +54,7 @@ def test_hourly_candidates_rank_by_quote_volume_before_reserving(tmp_path, monke
     funding = {
         s: [
             FundingEvent(s, at, D("0.0001"), D("100"), f"{s}:{at}")
-            for at in (-16 * 3600000, -8 * 3600000, 0)
+            for at in (-16 * 3600000, -8 * 3600000 + jitter_ms, 0)
         ]
         for s in symbols
     }
@@ -92,6 +95,16 @@ def test_hourly_candidates_rank_by_quote_volume_before_reserving(tmp_path, monke
         ),
     )
     prepared = []
+    reserves = []
+    original_size = simulation.size_entry
+
+    def capture_size(value):
+        from crypto_bot.risk.sizing import adverse_funding_reserve
+
+        reserves.append(adverse_funding_reserve(value.context.funding))
+        return original_size(value)
+
+    monkeypatch.setattr(simulation, "size_entry", capture_size)
     original = simulation.SimulationBroker.prepare_entry
 
     def capture(self, intent, *args):
@@ -101,3 +114,4 @@ def test_hourly_candidates_rank_by_quote_volume_before_reserving(tmp_path, monke
     monkeypatch.setattr(simulation.SimulationBroker, "prepare_entry", capture)
     simulation.run_backtest(manifest, Settings(mode="BACKTEST"))
     assert prepared[0] == "SOLUSDT"
+    assert reserves and all(reserve == D("0.0007") for reserve in reserves)

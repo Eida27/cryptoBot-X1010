@@ -53,6 +53,21 @@ READ_ENDPOINTS = {
 }
 
 
+class _ResponseCapture:
+    """Retain this request's wire response while the SDK handles signing/errors."""
+
+    def __init__(self, session: Any) -> None:
+        self.session = session
+        self.response: Any = None
+
+    def request(self, **kwargs: Any) -> Any:
+        self.response = self.session.request(**kwargs)
+        return self.response
+
+    def mount(self, *args: Any) -> None:
+        self.session.mount(*args)
+
+
 class SDKTransport:
     def __init__(self, settings: Settings, private: bool) -> None:
         self.base_url = settings.rest_url
@@ -75,17 +90,25 @@ class SDKTransport:
             raise ConfigurationError("Public client cannot access private endpoints")
         api = self.client.rest_api
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[Any] = loop.run_in_executor(
-            self.executor,
-            lambda: send_request(
-                api._session,
+
+        def send_exact() -> Any:
+            capture = _ResponseCapture(api._session)
+            send_request(
+                cast(Any, capture),
                 self.configuration,
                 http_method,
                 endpoint,
                 payload=params,
                 is_signed=signed,
                 signer=cast(Any, api._signer),
-            ).data(),
+            ).data()
+            # Brackets contain JSON numbers. Decode the original wire text so the
+            # SDK's float coercion cannot lose precision before normalization.
+            return json.loads(capture.response.text, parse_float=D)
+
+        future: asyncio.Future[Any] = loop.run_in_executor(
+            self.executor,
+            send_exact,
         )
         self.pending.add(future)
         future.add_done_callback(self.pending.discard)

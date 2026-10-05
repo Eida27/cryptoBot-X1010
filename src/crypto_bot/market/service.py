@@ -10,6 +10,7 @@ from crypto_bot.domain.models import (
     VerifiedSettings,
 )
 from crypto_bot.exchange.errors import MissingFundingData
+from crypto_bot.market.validation import funding_schedule_intervals
 
 
 class MarketService:
@@ -33,9 +34,7 @@ class MarketService:
         funding_info = next((v for v in info if v["symbol"] == signal.symbol), None)
         if len(history) < 3:
             raise MissingFundingData("Incomplete funding history")
-        intervals = {
-            int(b["fundingTime"]) - int(a["fundingTime"]) for a, b in zip(history, history[1:])
-        }
+        intervals = set(funding_schedule_intervals(int(v["fundingTime"]) for v in history))
         if funding_info:
             interval = D(str(funding_info["fundingIntervalHours"]))
         elif len(intervals) == 1:

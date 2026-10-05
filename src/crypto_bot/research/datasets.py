@@ -16,7 +16,7 @@ from crypto_bot.domain.clock import SystemClock
 from crypto_bot.domain.models import Candle, CandleEvent, FundingEvent, MarketEvent
 from crypto_bot.exchange.binance_adapter import BinanceAdapter
 from crypto_bot.exchange.normalization import normalize_candle
-from crypto_bot.market.validation import validate_candle
+from crypto_bot.market.validation import funding_schedule_intervals, validate_candle
 from crypto_bot.storage.repository import digest, plain
 
 
@@ -315,7 +315,7 @@ def validate_funding_coverage(
 ) -> None:
     if not events:
         raise ValueError(f"{symbol}: MISSING_ACTUAL_FUNDING")
-    intervals = [b.at_ms - a.at_ms for a, b in zip(events, events[1:])]
+    intervals = funding_schedule_intervals(event.at_ms for event in events)
     if any(v <= 0 or v > 8 * 3600000 for v in intervals):
         raise ValueError(f"{symbol}: FUNDING_GAP_OR_INVALID_INTERVAL")
     if len(set(intervals)) > 1:

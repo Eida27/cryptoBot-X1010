@@ -72,6 +72,51 @@ async def test_pinned_sdk_raw_transport_keeps_decimal_strings(monkeypatch):
     adapter.transport.close()
 
 
+async def test_private_sdk_brackets_preserve_exact_json_numbers(monkeypatch):
+    import json
+    from decimal import Decimal as D
+    from pathlib import Path
+
+    import requests
+
+    from crypto_bot.exchange.binance_adapter import BinanceAdapter
+
+    information = Path("tests/fixtures/binance_exchange_info.json").read_bytes()
+    bracket = (
+        b'[{"symbol":"SOLUSDT","brackets":[{"bracket":1,"initialLeverage":100,'
+        b'"notionalCap":50000,"notionalFloor":0,'
+        b'"maintMarginRatio":0.005000000000000000000000000000001,"cum":0.0}]}]'
+    )
+
+    def request(session, **kwargs):
+        assert kwargs["method"] == "GET"
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "application/json"
+        response._content = information if kwargs["url"].endswith("/exchangeInfo") else bracket
+        return response
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    adapter = BinanceAdapter(
+        Settings(mode="DEMO", api_key="fixture-key", api_secret="fixture-secret"), private=True
+    )
+    try:
+        rules = await adapter.fetch_rules("SOLUSDT")
+        assert rules.maintenance_rate == D("0.005000000000000000000000000000001")
+        assert rules.maintenance_deduction == D("0.0")
+        assert rules.bracket_limit == D("50000")
+        raw = await adapter.read("brackets", symbol="SOLUSDT")
+        assert raw[0]["brackets"][0]["initialLeverage"] == 100
+        # The preserved metadata must remain serializable as an exact frozen export.
+        from crypto_bot.storage.repository import encode
+
+        assert json.loads(encode(raw))[0]["brackets"][0]["maintMarginRatio"] == (
+            "0.005000000000000000000000000000001"
+        )
+    finally:
+        adapter.transport.close()
+
+
 async def test_paper_uses_expiring_verified_bracket_export_without_private_calls(tmp_path, clock):
     import json
     from pathlib import Path
@@ -110,7 +155,8 @@ async def test_paper_uses_expiring_verified_bracket_export_without_private_calls
         await adapter.fetch_rules("SOLUSDT")
 
 
-async def test_flat_v3_account_verifies_settings_from_symbol_config(clock):
+@pytest.mark.parametrize("jitter_ms", [0, 16])
+async def test_flat_v3_account_verifies_settings_from_symbol_config(clock, jitter_ms):
     from decimal import Decimal as D
 
     from crypto_bot.domain.models import ExchangeSnapshot
@@ -141,7 +187,10 @@ async def test_flat_v3_account_verifies_settings_from_symbol_config(clock):
                 },
                 "ticker24hr": {"quoteVolume": "200000000"},
                 "funding_history": [
-                    {"fundingTime": clock.now_ms() - i * 28800000, "fundingRate": "0.0001"}
+                    {
+                        "fundingTime": clock.now_ms() - i * 28800000 + (jitter_ms if i % 2 else 0),
+                        "fundingRate": "0.0001",
+                    }
                     for i in reversed(range(21))
                 ],
                 "funding_info": [],
@@ -165,3 +214,4 @@ async def test_flat_v3_account_verifies_settings_from_symbol_config(clock):
     adapter.clock = clock
     result = await MarketService(adapter, adapter).build_context(signal(clock.now_ms() - 1))
     assert result.settings.isolated and result.settings.leverage == D("2")
+    assert result.funding.interval_hours == D("8")

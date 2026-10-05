@@ -1,5 +1,7 @@
 # Compatibility evidence
 
+The [2026-10-05 G3–G7 follow-up](g3-g7-verification.md) adds actual private bracket/fee reads and full historical input acquisition. The transport now preserves JSON numeric financial fields as exact `Decimal` values from the wire response while retaining the pinned SDK's signing and error behavior. Historical/runtime funding cadence accepts subsecond settlement reporting delays without modifying ledger timestamps; missing settlements and schedule changes still fail closed. The follow-up's native suite covers these regressions. Earlier container evidence below applies to its recorded package hash.
+
 Checked 2026-10-04. Python 3.12.15 and uv 0.12.23 are used locally.
 The lock pins Binance SDK 17.5.0, binance-common 4.5.0, FastAPI 0.142.2,
 Uvicorn 0.54.0, Jinja2 3.1.6 and pydantic-settings 2.15.0; all support Python 3.12.

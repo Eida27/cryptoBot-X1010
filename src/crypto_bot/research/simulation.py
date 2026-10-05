@@ -33,6 +33,7 @@ from crypto_bot.domain.models import (
 )
 from crypto_bot.exchange.normalization import normalize_rules
 from crypto_bot.market.indicators import update_indicators
+from crypto_bot.market.validation import funding_schedule_intervals
 from crypto_bot.research.datasets import (
     DatasetManifest,
     iter_candles,
@@ -466,7 +467,9 @@ def run_backtest(manifest: DatasetManifest, settings: Settings, stress: bool = F
             if len(past) < 3:
                 vetoes.append((signal.close_ms, symbol, "MISSING_FUNDING_HISTORY"))
                 continue
-            interval = D(past[-1].at_ms - past[-2].at_ms) / D("3600000")
+            interval = D(funding_schedule_intervals(event.at_ms for event in past[-2:])[0]) / D(
+                "3600000"
+            )
             funding = FundingContext(
                 signal.close_ms,
                 past[-1].at_ms + int(interval * 3600000),

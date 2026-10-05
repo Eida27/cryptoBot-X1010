@@ -1,4 +1,12 @@
+from collections.abc import Iterable
+
 from crypto_bot.domain.models import Candle
+
+
+def funding_schedule_intervals(timestamps: Iterable[int]) -> tuple[int, ...]:
+    """Compare cadence at second precision; retain actual milliseconds for accounting."""
+    seconds = tuple(timestamp // 1000 for timestamp in timestamps)
+    return tuple((b - a) * 1000 for a, b in zip(seconds, seconds[1:]))
 
 
 def validate_candle(candle: Candle) -> None:

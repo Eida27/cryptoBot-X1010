@@ -103,3 +103,44 @@ def test_funding_gap_cannot_be_called_complete(tmp_path):
         write_dataset(
             request, tmp_path, {"SOLUSDT": bars}, {"SOLUSDT": marks}, {"SOLUSDT": events}, {}
         )
+
+
+def test_funding_cadence_accepts_millisecond_delays_and_preserves_records(tmp_path):
+    from crypto_bot.research.datasets import (
+        DatasetRequest,
+        iter_funding,
+        validate_dataset,
+        write_dataset,
+    )
+
+    request = DatasetRequest(("SOLUSDT",), 0, 86400000, warmup=0)
+    events = [
+        FundingEvent("SOLUSDT", at, D("0.0001"), D("100"), str(at))
+        for at in (8, 28800002, 57600016)
+    ]
+    manifest = write_dataset(
+        request,
+        tmp_path,
+        {"SOLUSDT": (minute(i) for i in range(1440))},
+        {"SOLUSDT": (minute(i) for i in range(1440))},
+        {"SOLUSDT": events},
+        {},
+    )
+    assert validate_dataset(manifest).valid
+    assert tuple(iter_funding(manifest, "SOLUSDT")) == tuple(events)
+
+
+@pytest.mark.parametrize(
+    "timestamps,reason",
+    [
+        ((8, 28800002, 86400016), "FUNDING_GAP"),
+        ((8, 28800002, 43200016), "SCHEDULE_CHANGE"),
+        ((8, 9, 28800002), "INVALID_INTERVAL"),
+    ],
+)
+def test_funding_jitter_cannot_hide_missing_changed_or_duplicate_settlements(timestamps, reason):
+    from crypto_bot.research.datasets import DatasetRequest, validate_funding_coverage
+
+    events = [FundingEvent("SOLUSDT", at, D("0.0001"), D("100"), str(at)) for at in timestamps]
+    with pytest.raises(ValueError, match=reason):
+        validate_funding_coverage(events, DatasetRequest(("SOLUSDT",), 0, 86400000, 0), "SOLUSDT")

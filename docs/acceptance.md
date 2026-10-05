@@ -1,10 +1,12 @@
 # Implementation acceptance — 2026-10-05
 
-The fifteen-task implementation is delivered on the local `codex/futures-bot` branch. It defaults to PAPER with entries paused, 16 USDT virtual capital (an accounting estimate for PHP 1,000), immutable 14.40 USDT floor, and a PHP 100 equivalent total trial-loss allowance. This document records functional implementation evidence, not a profitable strategy or permission to trade or deploy.
+The [G3–G7 verification follow-up](g3-g7-verification.md) is the current release assessment. The revised normal suite passes **172 tests with one opt-in demo skipped**; actual historical evidence now blocks G3. G4–G7 remain unqualified. LIVE remains disabled.
 
-## Functional verification
+The fifteen-task implementation originally ran on local `codex/futures-bot`; verification continues on `codex/g3-g7-verification`. It defaults to PAPER with entries paused, 16 USDT virtual capital (an accounting estimate for PHP 1,000), immutable 14.40 USDT floor, and a PHP 100 equivalent total trial-loss allowance. This document records functional implementation evidence, not permission to trade or deploy.
 
-The final verification passed: locked dependency sync; Ruff; mypy across 47 source files; and the full pytest suite, **165 passed, 1 skipped in 152.28 seconds**. This includes 159 unit/integration cases and six authenticated Chromium browser cases. The opt-in real demo test was skipped. One upstream Starlette/httpx test-client deprecation warning remains. Documented CLI config validation, empty-state paper creation, backup and checksum-verified isolated restore also passed; the restored state was `PAUSED_RECONCILIATION_REQUIRED`.
+## Earlier implementation verification
+
+The earlier implementation verification passed: locked dependency sync; Ruff; mypy across 47 source files; and the full pytest suite, **165 passed, 1 skipped in 152.28 seconds**. This includes 159 unit/integration cases and six authenticated Chromium browser cases. The opt-in real demo test was skipped. One upstream Starlette/httpx test-client deprecation warning remains. Documented CLI config validation, empty-state paper creation, backup and checksum-verified isolated restore also passed; the restored state was `PAUSED_RECONCILIATION_REQUIRED`. These observations below apply to the earlier package hash, not the revised compatibility fixes.
 
 The locked Python 3.12 environment, Ruff, mypy, unit/integration tests, and authenticated Chromium dashboard tests are the normal verification commands in the plan. The suite covers the shared strategy/risk engine, exact Decimal accounting, native protection intent lifecycle, ambiguous submissions, provisional protection before REST, recovery, loss halts, paper interruptions, idempotent controls, authentication, backup/restore, and reports. The browser matrix exercises PAPER/DEMO/LIVE display at desktop and narrow widths, pending controls, escaped messages, expired sessions, and private access. DEMO/LIVE browser cases use local fixtures and submit no venue orders.
 
@@ -20,17 +22,19 @@ Build, suite, browser, clock, hash, backup/restore and restart logs are in `arti
 
 | Gate | Current evidence | Release consequence |
 | --- | --- | --- |
-| G1 — logic/accounting | Functional tests verify the implemented logic and invariants | PASS in the generated, hash-bound local evidence |
-| G2 — execution/recovery | Fake-exchange lifecycle, restart, unknown submission, loss halt and durable control tests pass | PASS for tested behavior; actual venue behavior is G4 |
-| G3 — historical base and stress | A tiny actual public sample produces zero trades and `INSUFFICIENT_WARMUP` | NOT_YET_OBSERVED; no qualifying 24-month history or 50 closed holdout trades in either case |
-| G4 — real demo lifecycle | Opt-in suite supplied, skipped in normal verification; no demo orders submitted | NOT_YET_OBSERVED; requires actual lifecycle, partial/zero-fill and private reconnect evidence |
-| G5 — forward PAPER | Short functional smoke only; shutdown permanently interrupts that run | NOT_YET_OBSERVED; requires 30 uninterrupted days and 20 closed trades with positive net P&L |
-| G6 — operations/economics | Native and Docker auth, backup/restore, startup and restart verified | NOT_YET_OBSERVED; requires 72-hour resource evidence, account/capital feasibility and positive after-hosting economics |
+| G1 — logic/accounting | Revised full normal suite: 172 passed, one opt-in demo skipped; exact Decimal/funding regressions pass | PASS in the generated, hash-bound local evidence |
+| G2 — execution/recovery | Fake-exchange lifecycle, restart, unknown submission, loss halt and durable control tests pass; independent compatibility review has no findings | PASS for tested behavior; actual venue behavior is G4 |
+| G3 — historical base and stress | Complete 24-month frozen BTC/ETH/SOL inputs, warm-up and actual funding; base/stress lose 1.5431/1.5618 USDT across 168/82 trades, with zero holdout trades in both | FAIL; requires positive base/stress holdout returns and at least 50 closed holdout trades per case |
+| G4 — real demo lifecycle | Updated credentials support private reads; opted-in test fails the allocation precondition before any order | NOT_YET_OBSERVED; existing demo exposure/settings/allocation block actual lifecycle verification |
+| G5 — forward PAPER | Authenticated isolated smoke is PAUSED/INTERRUPTED with zero closed trades | NOT_YET_OBSERVED; requires 30 uninterrupted days and 20 closed trades with positive net P&L |
+| G6 — operations/economics | Native backup/restore and private reads pass; short contended resource sample exceeds CPU/lag limits; live account preconditions fail | NOT_YET_OBSERVED; no qualified 72-hour rehearsal, funded safe allocation, eligibility or after-hosting forward economics |
 | G7 — operator authorization | No live trial armed or resumed | NOT_YET_OBSERVED; explicit acknowledgement and authenticated Resume are separate final actions |
 
 `docs/evidence-template.json` is deliberately empty evidence: unset hashes fail binding and absent observations cannot pass gates. Copy it into private state, bind `config`, `strategy`, `code`, and `data` hashes and attach actual evidence before evaluating. Editing booleans is not a substitute for performing the checks. Material code/config/capital/data changes invalidate the corresponding results.
 
-`reports/acceptance/evidence.json` records the performed functional checks and current hashes, with their artifact paths. Evaluation in `reports/acceptance/gates.json` gives G1/G2 PASS and G3–G7 NOT_YET_OBSERVED. The unqualified public sample supplies a real data binding for these functional checks; it supplies no qualifying historical, forward, demo or economic evidence.
+`reports/g3-g7-20261005/evidence.json` and `gates.json` contain the current assessment, bound to the fixed paper/backtest allocation/configuration, current strategy/code and completed `data/g3-20261005/frozen-v3/manifest.json`. `observations.json` retains the unqualified demo/forward/operational snapshots separately; those partial facts are not rebound as passing gate evidence. Material changes require new evidence, including the actual LIVE allocation/configuration before any promotion.
+
+`reports/acceptance/evidence.json` and `gates.json` retain the earlier implementation snapshot. They use an older package hash and tiny public sample, and do not represent the revised release assessment.
 
 The actual sample in `data/public-sample` covers three minutes of SOLUSDT on 2026-10-02. Base/stress JSON, CSV and HTML outputs in `reports/public-sample` use the same frozen chronological split boundaries and report the missing warm-up. They do not establish capital feasibility, returns, trade frequency or the long-term suitability of the strategy.
 
@@ -54,7 +58,7 @@ uv run cbot serve --config config/paper.toml
 
 Open `http://127.0.0.1:8000` and authenticate with the locally set password. The service starts paused. PAPER cannot place venue orders. Without actual maintenance metadata or complete/fresh market inputs it records an entry veto. Use the [local runbook](../runbooks/local.md) for expiring, read-only maintenance-bracket exports, CLI controls, an explicit new paper session and mode isolation.
 
-Use [demo instructions](../tests/demo/README.md) only after separate authorization for real demo mutations. Start sustained VPS paper observation only after deployment is separately authorized. Account eligibility and fee/bracket feasibility require actual account evidence. Keep all credentials and runtime/account data outside Git. Preserve prior interrupted runs rather than inventing offline observations.
+Use [demo instructions](../tests/demo/README.md) only after authorization for real demo mutations and a clean account satisfying the declared allocation/settings. The current authorized attempt stopped at that precondition. Start sustained VPS paper observation only after deployment is separately authorized. Account eligibility and fee/bracket feasibility require actual account evidence. Keep all credentials and runtime/account data outside Git. Preserve prior interrupted runs rather than inventing offline observations.
 
 ## Recorded implementation decisions
 
@@ -81,4 +85,4 @@ A single fresh final reviewer examined the completed implementation at `cfd5693`
 
 The bracket CLI regression uses a clearly synthetic fixture to verify ingestion and sizing; it supplies no real account or G3 evidence. The additional clock regression accepts timestamp skew within the existing one-second guard without changing that limit. Deferred minor findings: **none**.
 
-All fifteen implementation tasks and final review fixes are complete on the local branch. Integration remains the operator's choice.
+The earlier fifteen-task implementation and its review fixes are retained. The [current follow-up](g3-g7-verification.md) records subsequent compatibility fixes and the failed/unobserved release gates; functional completion does not establish live readiness.
